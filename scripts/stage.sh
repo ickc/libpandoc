@@ -7,6 +7,7 @@
 #   $1/lib/libpandoc/              (Linux, macOS: the Haskell shared libraries
 #                                   libpandoc.so needs; its RPATH points here)
 #   $1/share/libpandoc/ast-schema.json
+#   $1/share/libpandoc/examples/smoke.c
 #
 # On Linux and macOS, GHC's static libraries are not position-independent
 # (Linux) or cabal links foreign libraries dynamically (both), so libpandoc
@@ -15,9 +16,11 @@
 set -euo pipefail
 
 out=$1
-mkdir -p "$out/include" "$out/lib" "$out/share/libpandoc"
+mkdir -p "$out/include" "$out/lib" "$out/share/libpandoc/examples"
 out=$(cd "$out" && pwd)
 cp include/libpandoc.h "$out/include/"
+cp COPYING.md "$out/"
+cp test/smoke.c "$out/share/libpandoc/examples/"
 
 case "$(uname -s)" in
 Linux)
@@ -30,10 +33,12 @@ Linux)
 		grep -E '/(libHS[^/]*|libffi[^/]*)$' | while read -r dep; do
 		cp -L "$dep" "$out/lib/libpandoc/"
 	done
+	# RUNPATH isn't transitive: each library needs its own path to its
+	# siblings and to lib/ (gmp, zlib: from conda, or the system)
 	for so in "$out"/lib/libpandoc/*.so*; do
-		patchelf --set-rpath '$ORIGIN' "$so"
+		patchelf --set-rpath '$ORIGIN:$ORIGIN/..' "$so"
 	done
-	patchelf --set-rpath '$ORIGIN/libpandoc' "$out/lib/libpandoc.so"
+	patchelf --set-rpath '$ORIGIN/libpandoc:$ORIGIN' "$out/lib/libpandoc.so"
 	;;
 Darwin)
 	lib=$(find dist-newstyle -name 'libpandoc.dylib' -path '*/f/pandoc/*' | head -1)

@@ -1,0 +1,76 @@
+# Packages the prefix staged by scripts/build.sh in dist/. CI exports the
+# pins; locally:
+#
+#   (set -a; . ./pins.env; export PANDOC_API_VERSION=$(scripts/api-version.sh dist)
+#    rattler-build build -r recipe -c https://prefix.dev/pandoc-forge/dev -c conda-forge)
+context:
+  version: "0.1.0"
+  pandoc_version: ${{ env.get("PANDOC_VERSION") }}
+  api_version: ${{ env.get("PANDOC_API_VERSION") }}
+  build_number: 0
+
+package:
+  name: libpandoc
+  version: ${{ version }}
+
+source:
+  path: ../dist
+  use_gitignore: false
+
+build:
+  number: ${{ build_number }}
+  # names the pandoc inside, e.g. pandoc3_11_pandoc_forge_0
+  string: pandoc${{ pandoc_version | replace(".", "_") }}_pandoc_forge_${{ build_number }}
+  script:
+    - if: unix
+      then:
+        - cp -R include lib share "$PREFIX/"
+      else:
+        - xcopy /E /I /Y include "%LIBRARY_INC%"
+        - xcopy /E /I /Y bin "%LIBRARY_BIN%"
+        - xcopy /E /I /Y lib "%LIBRARY_LIB%"
+        - xcopy /E /I /Y share "%LIBRARY_PREFIX%\share"
+  dynamic_linking:
+    # the bundled Haskell libraries are found through $ORIGIN RPATHs
+    binary_relocation: false
+
+requirements:
+  run:
+    - if: unix
+      then:
+        - gmp
+        - zlib
+    # the pandoc API (pandoc-types major.minor) of the AST this library speaks
+    - pandoc-api ${{ api_version }}.*
+  run_exports:
+    - libpandoc ==${{ version }} *pandoc${{ pandoc_version | replace(".", "_") }}_*
+
+tests:
+  - package_contents:
+      include:
+        - libpandoc.h
+      lib:
+        - pandoc
+      files:
+        - if: unix
+          then: share/libpandoc/ast-schema.json
+  - script:
+      - if: unix
+        then:
+          - $CC -o smoke "$PREFIX/share/libpandoc/examples/smoke.c" -I"$PREFIX/include" -L"$PREFIX/lib" -lpandoc $LDFLAGS
+          - ./smoke
+    requirements:
+      run:
+        - ${{ compiler("c") }}
+
+about:
+  homepage: https://github.com/ickc/libpandoc
+  repository: https://github.com/ickc/libpandoc
+  license: GPL-2.0-or-later
+  license_file: COPYING.md
+  summary: pandoc as a C library
+  description: |
+    A shared library exposing pandoc (${{ pandoc_version }}) through a small,
+    stable C ABI: conversions with defaults-file options or command-line
+    arguments, queries, and pandoc's JSON AST with a generated schema of its
+    types.
