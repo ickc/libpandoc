@@ -89,7 +89,9 @@ jobs:
           fi
 
       - name: Show size
-        run: du -sh dist; ls dist/lib/libpandoc 2>/dev/null | wc -l
+        run: |
+          du -sh dist
+          if [[ -d dist/lib/libpandoc ]]; then echo "$(find dist/lib/libpandoc -type f | wc -l) bundled libraries"; fi
 
       - name: Archive
         run: tar -czf libpandoc-${{ matrix.subdir }}.tar.gz -C dist .

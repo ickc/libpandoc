@@ -60,6 +60,8 @@ Darwin)
 		todo=("${todo[@]:1}")
 		for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E 'libHS|libffi|libgmp' || true); do
 			base=$(basename "$dep")
+			# the system's own (e.g. /usr/lib/libffi.dylib, in the dyld cache)
+			if [[ $dep == /usr/lib/* || $dep == /System/* ]]; then continue; fi
 			if [[ $base == "$(basename "$f")" ]]; then continue; fi
 			if [[ ! -e $out/lib/libpandoc/$base ]]; then
 				if [[ $dep == /* ]]; then
