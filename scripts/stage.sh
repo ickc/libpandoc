@@ -45,40 +45,49 @@ Darwin)
 	cp "$lib" "$out/lib/libpandoc.dylib"
 	install_name_tool -id @rpath/libpandoc.dylib "$out/lib/libpandoc.dylib"
 	mkdir -p "$out/lib/libpandoc"
-	# copy the Haskell dylibs it references (transitively), and gmp from
-	# Homebrew, then point every
-	# reference at @rpath
+	# Every Haskell dylib that could be referenced, by name: GHC's boot
+	# libraries use @loader_path-relative rpaths, which stop resolving once
+	# copied, so references are looked up here instead. (macOS bash is 3.2:
+	# no associative arrays.)
+	index=$(mktemp)
+	find "$(ghc --print-libdir)" "$(cabal path --store-dir)" dist-newstyle \
+		-name 'lib*.dylib' >"$index" 2>/dev/null || true
+	# Copy what libpandoc references, transitively (Haskell libraries, GHC's
+	# libffi, and gmp), and point every reference at @rpath.
 	todo=("$out/lib/libpandoc.dylib")
 	while ((${#todo[@]})); do
 		f=${todo[0]}
 		todo=("${todo[@]:1}")
-		while read -r dep; do
+		for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E 'libHS|libffi|libgmp' || true); do
 			base=$(basename "$dep")
+			if [[ $base == "$(basename "$f")" ]]; then continue; fi
 			if [[ ! -e $out/lib/libpandoc/$base ]]; then
-				src=$dep
-				if [[ $dep == @rpath/* ]]; then
-					src=
-					while read -r d; do
-						if [[ -e $d/$base ]]; then src=$d/$base; break; fi
-					done < <(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}')
-					if [[ -z $src ]]; then echo "cannot find $dep for $f" >&2; exit 1; fi
+				if [[ $dep == /* ]]; then
+					src=$dep
+				else
+					src=$(grep "/$base\$" "$index" | head -1 || true)
+				fi
+				if [[ -z $src || ! -e $src ]]; then
+					echo "cannot find $dep, needed by $f" >&2
+					exit 1
 				fi
 				cp -L "$src" "$out/lib/libpandoc/$base"
 				chmod u+w "$out/lib/libpandoc/$base"
-				install_name_tool -id "@rpath/$base" "$out/lib/libpandoc/$base"
+				install_name_tool -id "@rpath/$base" "$out/lib/libpandoc/$base" 2>/dev/null
 				todo+=("$out/lib/libpandoc/$base")
 			fi
-			install_name_tool -change "$dep" "@rpath/$base" "$f" 2>/dev/null || true
-		done < <(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E 'libHS|libffi|libgmp' || true)
+			install_name_tool -change "$dep" "@rpath/$base" "$f" 2>/dev/null
+		done
 	done
+	rm -f "$index"
 	for f in "$out/lib/libpandoc.dylib" "$out"/lib/libpandoc/*.dylib; do
-		while read -r r; do
-			install_name_tool -delete_rpath "$r" "$f"
-		done < <(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}')
+		for r in $(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}'); do
+			install_name_tool -delete_rpath "$r" "$f" 2>/dev/null
+		done
 	done
-	install_name_tool -add_rpath @loader_path/libpandoc "$out/lib/libpandoc.dylib"
+	install_name_tool -add_rpath @loader_path/libpandoc "$out/lib/libpandoc.dylib" 2>/dev/null
 	for f in "$out"/lib/libpandoc/*.dylib; do
-		install_name_tool -add_rpath @loader_path "$f"
+		install_name_tool -add_rpath @loader_path "$f" 2>/dev/null
 	done
 	# modified binaries need re-signing on Apple Silicon
 	codesign --force -s - "$out/lib/libpandoc.dylib" "$out"/lib/libpandoc/*.dylib

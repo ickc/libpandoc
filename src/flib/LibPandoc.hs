@@ -36,7 +36,8 @@ import GHC.IO.Encoding (utf8)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Text.Pandoc.App (Opt (..), OptInfo (..), convertWithOpts, defaultOpts,
+import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..), convertWithOpts,
+                        defaultOpts,
                         options, parseOptionsFromArgs)
 import Text.Pandoc.Error (PandocError (..), renderError)
 import Text.Pandoc.Logging (Verbosity (ERROR))
@@ -112,6 +113,12 @@ convert opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
         , optLogFile = Just logFile
           -- messages are returned in the log rather than printed on stderr
         , optVerbosity = ERROR
+          -- captured output is an in-memory string: \n, as in Python or
+          -- C text, rather than the platform's line ending; files keep
+          -- pandoc's default (native)
+        , optEol = case optEol opts of
+            Native | toStdout -> LF
+            e -> e
           -- the formats pandoc assumes for stdin and stdout, which it
           -- can't deduce from the temporary files' names
         , optFrom = case optFrom opts of

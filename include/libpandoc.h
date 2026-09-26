@@ -78,7 +78,9 @@ LIBPANDOC_API int pandoc_abi_version(void);
  *          input-files (or, with neither, the process's real stdin, as the
  *          pandoc CLI would).
  *
- * Output goes to result->output unless the options set output-file. */
+ * Output goes to result->output unless the options set output-file. Captured
+ * output has LF line endings unless the options set "eol"; files get
+ * pandoc's default (native), as with the CLI. */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 
