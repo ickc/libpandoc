@@ -62,7 +62,7 @@ jobs:
         env:
           CABALOPTS: -j
           # Homebrew's gmp, for GHC's bignum library
-          CABAL_PROJECT_EXTRA: ${{ runner.os == 'macOS' && 'extra-lib-dirs: /opt/homebrew/lib /usr/local/lib' || '' }}
+          CABAL_PROJECT_EXTRA: "${{ runner.os == 'macOS' && 'extra-lib-dirs: /opt/homebrew/lib /usr/local/lib' || '' }}"
         run: bash scripts/build.sh dist
 
       - name: Save cabal store
