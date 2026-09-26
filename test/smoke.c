@@ -42,6 +42,17 @@ int main(int argc, char **argv)
     check(r && r->status != 0, "argv error, without stdin");
     pandoc_result_free(r);
 
+    /* an error thrown before converting: malformed options */
+    const char *junk = "{\"from\": ";
+    r = pandoc_convert(junk, strlen(junk), md, strlen(md));
+    check(r && r->status != 0, "malformed options are an error");
+    pandoc_result_free(r);
+
+    const char *list[] = {"--list-input-formats"};
+    r = pandoc_convert_args(1, list, md, strlen(md));
+    check(r && r->status != 0, "informational option, with stdin");
+    pandoc_result_free(r);
+
     const char *ver[] = {"--version"};
     r = pandoc_convert_args(1, ver, NULL, 0);
     check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
