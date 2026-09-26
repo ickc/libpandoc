@@ -35,6 +35,17 @@ common deps
                     temporary,
                     text
 
+-- Everything but the exports. Separate from the foreign library so that the
+-- Template Haskell in LibPandoc.Schema is evaluated without cbits, whose
+-- references to the exports GHC's linker can't resolve (Windows).
+library
+  import:           deps
+  hs-source-dirs:   src
+  exposed-modules:  LibPandoc.Query
+                    LibPandoc.Result
+                    LibPandoc.Schema
+                    LibPandoc.SchemaTH
+
 foreign-library pandoc
   import:           deps
   type:             native-shared
@@ -46,12 +57,9 @@ foreign-library pandoc
     -- only the C API: a GHC DLL exporting everything exceeds the
     -- 65535-export limit
     mod-def-file:   libpandoc.def
-  hs-source-dirs:   src
+  hs-source-dirs:   src/flib
+  build-depends:    libpandoc
   other-modules:    LibPandoc
-                    LibPandoc.Query
-                    LibPandoc.Result
-                    LibPandoc.Schema
-                    LibPandoc.SchemaTH
   c-sources:        cbits/libpandoc.c
   install-includes: libpandoc.h
   ghc-options:      -threaded

@@ -45,7 +45,8 @@ Darwin)
 	cp "$lib" "$out/lib/libpandoc.dylib"
 	install_name_tool -id @rpath/libpandoc.dylib "$out/lib/libpandoc.dylib"
 	mkdir -p "$out/lib/libpandoc"
-	# copy the Haskell dylibs it references (transitively), then point every
+	# copy the Haskell dylibs it references (transitively), and gmp from
+	# Homebrew, then point every
 	# reference at @rpath
 	todo=("$out/lib/libpandoc.dylib")
 	while ((${#todo[@]})); do
@@ -56,8 +57,11 @@ Darwin)
 			if [[ ! -e $out/lib/libpandoc/$base ]]; then
 				src=$dep
 				if [[ $dep == @rpath/* ]]; then
-					src=$(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}' |
-						while read -r d; do [[ -e $d/$base ]] && echo "$d/$base"; done | head -1)
+					src=
+					while read -r d; do
+						if [[ -e $d/$base ]]; then src=$d/$base; break; fi
+					done < <(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}')
+					if [[ -z $src ]]; then echo "cannot find $dep for $f" >&2; exit 1; fi
 				fi
 				cp -L "$src" "$out/lib/libpandoc/$base"
 				chmod u+w "$out/lib/libpandoc/$base"
@@ -65,12 +69,12 @@ Darwin)
 				todo+=("$out/lib/libpandoc/$base")
 			fi
 			install_name_tool -change "$dep" "@rpath/$base" "$f" 2>/dev/null || true
-		done < <(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E 'libHS|libffi')
+		done < <(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E 'libHS|libffi|libgmp' || true)
 	done
 	for f in "$out/lib/libpandoc.dylib" "$out"/lib/libpandoc/*.dylib; do
-		otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}' | while read -r r; do
+		while read -r r; do
 			install_name_tool -delete_rpath "$r" "$f"
-		done
+		done < <(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}')
 	done
 	install_name_tool -add_rpath @loader_path/libpandoc "$out/lib/libpandoc.dylib"
 	for f in "$out"/lib/libpandoc/*.dylib; do
