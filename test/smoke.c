@@ -31,6 +31,14 @@ int main(int argc, char **argv)
     check(r && r->status == 0 && strstr(r->output, "\\emph{world}"), "convert_args");
     pandoc_result_free(r);
 
+    /* an error from the argv form, with no stdin */
+    const char *ver[] = {"--version"};
+    r = pandoc_convert_args(1, ver, NULL, 0);
+    check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
+          "informational option is rejected");
+    if (r && r->error_message) printf("      %s\n", r->error_message);
+    pandoc_result_free(r);
+
     const char *bad = "{\"from\": \"nonesuch\"}";
     r = pandoc_convert(bad, strlen(bad), md, strlen(md));
     check(r && r->status != 0 && strcmp(r->error_kind, "PandocUnknownReaderError") == 0,
