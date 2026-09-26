@@ -1,0 +1,9 @@
+LIBRARY pandoc
+EXPORTS
+    pandoc_init
+    pandoc_shutdown
+    pandoc_abi_version
+    pandoc_convert
+    pandoc_convert_args
+    pandoc_query
+    pandoc_result_free

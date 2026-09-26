@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: libpandoc (${{ matrix.subdir }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { subdir: linux-64, os: ubuntu-24.04 }
+          - { subdir: linux-aarch64, os: ubuntu-24.04-arm }
+          - { subdir: osx-64, os: macos-15-intel }
+          - { subdir: osx-arm64, os: macos-15 }
+          - { subdir: win-64, os: windows-2022 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read pins
+        run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
+
+      - name: Set up GHC
+        id: ghc
+        uses: haskell-actions/setup@v2.12.1
+        with:
+          ghc-version: ${{ env.GHC_VERSION }}
+          cabal-version: ${{ env.CABAL_VERSION }}
+
+      - name: Install native tools
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update && sudo apt-get install -y --no-install-recommends libgmp-dev patchelf ;;
+            macOS) brew install gmp ;;
+          esac
+
+      - name: Restore cabal store
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.ghc.outputs.cabal-store }}
+          key: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-${{ env.INDEX_STATE }}-${{ hashFiles('libpandoc.cabal', 'cabal.project') }}
+          restore-keys: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-
+
+      - name: Build
+        env:
+          CABALOPTS: -j
+          # Homebrew's gmp, for GHC's bignum library
+          CABAL_PROJECT_EXTRA: ${{ runner.os == 'macOS' && 'extra-lib-dirs: /opt/homebrew/lib /usr/local/lib' || '' }}
+        run: bash scripts/build.sh dist
+
+      - name: Save cabal store
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.ghc.outputs.cabal-store }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Smoke test (C)
+        run: |
+          case "$RUNNER_OS" in
+            Linux)   cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
+            macOS)   cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
+            Windows) gcc -Wall -o dist/bin/smoke.exe test/smoke.c -Idist/include dist/bin/pandoc.dll
+                     cp dist/bin/smoke.exe dist/smoke ;;
+          esac
+          if [[ $RUNNER_OS == Windows ]]; then
+            (cd dist/bin && ./smoke.exe ../share/libpandoc/ast-schema.json)
+            rm dist/smoke dist/bin/smoke.exe
+          else
+            dist/smoke dist/share/libpandoc/ast-schema.json
+            rm dist/smoke
+          fi
+
+      - name: Show size
+        run: du -sh dist; ls dist/lib/libpandoc 2>/dev/null | wc -l
+
+      - name: Archive
+        run: tar -czf libpandoc-${{ matrix.subdir }}.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libpandoc-${{ matrix.subdir }}
+          path: libpandoc-${{ matrix.subdir }}.tar.gz
+
+  # Every push to main replaces the assets of the `continuous` pre-release,
+  # which downstream CI (libpandoc-python) downloads.
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: libpandoc-*
+          merge-multiple: true
+      - name: Upload to the continuous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view continuous >/dev/null 2>&1 ||
+            gh release create continuous --prerelease --title continuous \
+              --notes "Latest build of main. Replaced on every push."
+          gh release upload continuous libpandoc-*.tar.gz --clobber

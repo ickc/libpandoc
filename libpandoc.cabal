@@ -1,0 +1,55 @@
+cabal-version:      3.0
+name:               libpandoc
+version:            0.1.0
+synopsis:           pandoc as a C library
+description:
+  A shared library exposing pandoc through a small C ABI: conversions with
+  defaults-file options, queries, and pandoc's JSON AST with a generated
+  schema of its types. See include/libpandoc.h.
+license:            GPL-2.0-or-later
+license-file:       COPYING.md
+author:             Kolen Cheung
+maintainer:         Kolen Cheung
+copyright:          (C) 2026 Kolen Cheung
+category:           Text
+build-type:         Simple
+extra-source-files: include/libpandoc.h
+                    libpandoc.def
+tested-with:        GHC == 9.10.3
+
+common deps
+  default-language: Haskell2010
+  ghc-options:      -Wall
+  include-dirs:     include
+  build-depends:    base >= 4.18 && < 5,
+                    aeson >= 2.0,
+                    bytestring,
+                    containers,
+                    directory,
+                    filepath,
+                    pandoc >= 3.9 && < 4,
+                    pandoc-lua-engine,
+                    pandoc-types >= 1.23 && < 1.24,
+                    skylighting,
+                    template-haskell,
+                    temporary,
+                    text
+
+foreign-library pandoc
+  import:           deps
+  type:             native-shared
+  lib-version-info: 0:0:0
+  if os(windows)
+    options:        standalone
+    -- only the C API: a GHC DLL exporting everything exceeds the
+    -- 65535-export limit
+    mod-def-file:   libpandoc.def
+  hs-source-dirs:   src
+  other-modules:    LibPandoc
+                    LibPandoc.Query
+                    LibPandoc.Result
+                    LibPandoc.Schema
+                    LibPandoc.SchemaTH
+  c-sources:        cbits/libpandoc.c
+  install-includes: libpandoc.h
+  ghc-options:      -threaded

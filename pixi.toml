@@ -1,0 +1,13 @@
+# Native dependencies for local builds. GHC and cabal come from ghcup (the
+# versions in pins.env); conda-forge's ghc is too old.
+[workspace]
+name = "libpandoc"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-64", "osx-arm64", "win-64"]
+
+[dependencies]
+gmp = "*"
+zlib = "*"
+
+[target.linux.dependencies]
+patchelf = "*"
