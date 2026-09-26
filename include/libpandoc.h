@@ -142,6 +142,15 @@ LIBPANDOC_API pandoc_result *pandoc_convert_filters(const char *options, size_t 
                                                     const pandoc_filter *filters,
                                                     size_t filters_len);
 
+/* pandoc_convert_args, with filters the arguments refer to as the Lua
+ * filters --lua-filter=libpandoc:callback/i (i < filters_len). A
+ * pandoc-compatible command line uses this to run filters written in its
+ * own language in process, wherever the user put them among the others. */
+LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *const *argv,
+                                                         const char *input, size_t input_len,
+                                                         const pandoc_filter *filters,
+                                                         size_t filters_len);
+
 /* Ask pandoc for information. query is a JSON object with a "query" key:
  *   {"query": "version"}                  pandoc version, e.g. "3.11"
  *   {"query": "api-version"}              pandoc-types API version, [1,23,1]

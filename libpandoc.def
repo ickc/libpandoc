@@ -6,6 +6,7 @@ EXPORTS
     pandoc_convert
     pandoc_convert_args
     pandoc_convert_filters
+    pandoc_convert_args_filters
     pandoc_buffer_set
     pandoc_query
     pandoc_result_free

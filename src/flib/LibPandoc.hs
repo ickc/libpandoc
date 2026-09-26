@@ -75,6 +75,9 @@ foreign export ccall "libpandoc_hs_convert_args"
   hsConvertArgs :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt -> IO (Ptr ())
 foreign export ccall "libpandoc_hs_query"
   hsQuery :: Ptr CChar -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_convert_args_filters"
+  hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
+                       -> Ptr () -> CSize -> IO (Ptr ())
 foreign export ccall "libpandoc_hs_convert_filters"
   hsConvertFilters :: Ptr CChar -> CSize -> Ptr CChar -> CSize -> CInt
                    -> Ptr () -> CSize -> IO (Ptr ())
@@ -105,7 +108,7 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (f :: Opt -> Opt) ->
-      convert (withCallbacks filters) (f defaultOpts) input
+      convert (withCallbacks filters (fromIntegral nFilters)) (f defaultOpts) input
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -136,15 +139,15 @@ callbackFilters n (Aeson.Object o)
 callbackFilters _ v = Right v
 
 -- | The engine, answering callback filters' paths by calling them.
-withCallbacks :: Ptr () -> Opt -> ScriptingEngine -> ScriptingEngine
-withCallbacks filters opts engine
+withCallbacks :: Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
+withCallbacks filters n opts engine
   | filters == nullPtr = engine
   | otherwise = engine { engineApplyFilter = apply }
   where
     apply :: (PandocMonad m, MonadIO m)
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
     apply env args path doc = case stripPrefix callbackPrefix path of
-      Just i | [(k, "")] <- reads i -> do
+      Just i | [(k, "")] <- reads i, k >= 0, k < n -> do
         r <- liftIO $ runCallback filters k opts env args doc
         either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
                pure r
@@ -176,12 +179,19 @@ runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf ->
       Right d -> Right d
 
 hsConvertArgs :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt -> IO (Ptr ())
-hsConvertArgs argc argv inPtr inLen hasIn = respond $ do
+hsConvertArgs argc argv inPtr inLen hasIn =
+  hsConvertArgsFilters argc argv inPtr inLen hasIn nullPtr 0
+
+-- | The argv form with callback filters, named in the arguments as the Lua
+-- filters @--lua-filter=libpandoc:callback/i@.
+hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
+                     -> Ptr () -> CSize -> IO (Ptr ())
+hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   args <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
   input <- peekInput inPtr inLen hasIn
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
-    Right opts -> convert (const id) opts input
+    Right opts -> convert (withCallbacks filters (fromIntegral nFilters)) opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>

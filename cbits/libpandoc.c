@@ -19,6 +19,9 @@ extern pandoc_result *libpandoc_hs_convert(char *options, size_t options_len,
 extern pandoc_result *libpandoc_hs_convert_args(int argc, char **argv,
                                                 char *input, size_t input_len, int has_input);
 extern pandoc_result *libpandoc_hs_query(char *query, size_t query_len);
+extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
+                                                        char *input, size_t input_len, int has_input,
+                                                        void *filters, size_t filters_len);
 extern pandoc_result *libpandoc_hs_convert_filters(char *options, size_t options_len,
                                                    char *input, size_t input_len, int has_input,
                                                    void *filters, size_t filters_len);
@@ -107,6 +110,16 @@ pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
     return libpandoc_hs_convert_filters((char *)options, options_len,
                                         (char *)input, input_len, input != NULL,
                                         (void *)filters, filters_len);
+}
+
+pandoc_result *pandoc_convert_args_filters(int argc, const char *const *argv,
+                                           const char *input, size_t input_len,
+                                           const pandoc_filter *filters, size_t filters_len)
+{
+    if (pandoc_init() != 0) return NULL;
+    return libpandoc_hs_convert_args_filters(argc, (char **)argv,
+                                             (char *)input, input_len, input != NULL,
+                                             (void *)filters, filters_len);
 }
 
 /* Callback filters: the buffer a filter answers in, and the call itself,

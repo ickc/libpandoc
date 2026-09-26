@@ -193,6 +193,18 @@ int main(int argc, char **argv)
               "callback filter: index out of range");
         pandoc_result_free(r);
 
+        const char *a1[] = {"-t", "html", "-L", "libpandoc:callback/1", "--lua-filter=libpandoc:callback/0"};
+        calls = 0;
+        r = pandoc_convert_args_filters(5, a1, md, strlen(md), fs, 4);
+        check(r && r->status == 0 && strstr(r->output, "<em>WORLD</em>") && calls == 1,
+              "callback filter: in the argv form");
+        pandoc_result_free(r);
+
+        const char *a2[] = {"-t", "html", "-L", "libpandoc:callback/7"};
+        r = pandoc_convert_args_filters(4, a2, md, strlen(md), fs, 4);
+        check(r && r->status != 0, "callback filter: argv index out of range is an error");
+        pandoc_result_free(r);
+
         r = pandoc_convert(o1, strlen(o1), md, strlen(md));
         check(r && r->status != 0, "callback filter: none given to pandoc_convert");
         pandoc_result_free(r);
