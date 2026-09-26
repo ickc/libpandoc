@@ -4,8 +4,8 @@ version:            0.1.0
 synopsis:           pandoc as a C library
 description:
   A shared library exposing pandoc through a small C ABI: conversions with
-  defaults-file options, queries, and pandoc's JSON AST with a generated
-  schema of its types. See include/libpandoc.h.
+  defaults-file options or command-line arguments, and queries. See
+  include/libpandoc.h.
 license:            GPL-2.0-or-later
 license-file:       COPYING.md
 author:             Kolen Cheung
@@ -31,20 +31,17 @@ common deps
                     pandoc-lua-engine,
                     pandoc-types >= 1.23 && < 1.24,
                     skylighting,
-                    template-haskell,
                     temporary,
                     text
 
--- Everything but the exports. Separate from the foreign library so that the
--- Template Haskell in LibPandoc.Schema is evaluated without cbits, whose
--- references to the exports GHC's linker can't resolve (Windows).
+-- Everything but the exports, separate from the foreign library, whose
+-- cbits refer to the exports. (Template Haskell in these modules would
+-- otherwise have to link cbits, which GHC's linker can't do on Windows.)
 library
   import:           deps
   hs-source-dirs:   src
   exposed-modules:  LibPandoc.Query
                     LibPandoc.Result
-                    LibPandoc.Schema
-                    LibPandoc.SchemaTH
 
 foreign-library pandoc
   import:           deps

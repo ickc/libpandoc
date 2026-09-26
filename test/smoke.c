@@ -82,12 +82,12 @@ int main(int argc, char **argv)
     if (r) printf("      log: %.160s\n", r->log);
     pandoc_result_free(r);
 
-    /* smoke SCHEMA.json: also save the AST schema */
+    /* smoke API.json: also save the pandoc API version, e.g. [1,23,1,2] */
     if (argc > 1) {
-        const char *sq = "{\"query\": \"ast-schema\"}";
+        const char *aq = "{\"query\": \"api-version\"}";
         FILE *f = fopen(argv[1], "wb");
-        r = pandoc_query(sq, strlen(sq));
-        check(r && r->status == 0 && f, "ast schema");
+        r = pandoc_query(aq, strlen(aq));
+        check(r && r->status == 0 && f && r->output[0] == '[', "api version");
         if (r && f) fwrite(r->output, 1, r->output_len, f);
         if (f) fclose(f);
         pandoc_result_free(r);

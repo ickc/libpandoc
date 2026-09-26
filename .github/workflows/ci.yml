@@ -103,10 +103,10 @@ jobs:
                      cp dist/bin/smoke.exe dist/smoke ;;
           esac
           if [[ $RUNNER_OS == Windows ]]; then
-            (cd dist/bin && ./smoke.exe ../share/libpandoc/ast-schema.json)
+            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json)
             rm dist/smoke dist/bin/smoke.exe
           else
-            dist/smoke dist/share/libpandoc/ast-schema.json
+            dist/smoke dist/share/libpandoc/api-version.json
             rm dist/smoke
           fi
 

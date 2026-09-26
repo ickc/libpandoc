@@ -13,7 +13,7 @@
  *     upstream's pandoc.wasm `convert`;
  *   - the document AST is pandoc's JSON (`-t json` / `-f json`), versioned by
  *     its "pandoc-api-version";
- *   - queries (formats, extensions, templates, the AST schema) are JSON.
+ *   - queries (formats, extensions, templates, versions) are JSON.
  *
  * All strings are UTF-8. Buffers passed in are borrowed; results are owned
  * by the caller and released with pandoc_result_free.
@@ -101,7 +101,6 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *                                         {extension: enabled-by-default}
  *   {"query": "default-template", "format": F}
  *                                         template text
- *   {"query": "ast-schema"}               the AST type schema (see README)
  * The answer is JSON, in result->output. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 

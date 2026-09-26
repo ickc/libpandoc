@@ -9,7 +9,7 @@
 
 Answers @pandoc_query@. The queries and their answers are those of
 upstream's pandoc.wasm (@pandoc-cli/wasm/PandocWasm.hs@), from which most of
-this is taken, plus @api-version@ and @ast-schema@.
+this is taken, plus @api-version@.
 -}
 module LibPandoc.Query (query) where
 
@@ -35,8 +35,6 @@ import Text.Pandoc.Lua (getEngine)
 import Text.Pandoc.Scripting (ScriptingEngine (..), customTemplate)
 import Text.Pandoc.Templates (getDefaultTemplate)
 
-import LibPandoc.Schema (astSchema)
-
 data Query
   = PandocVersion
   | ApiVersion
@@ -46,7 +44,6 @@ data Query
   | HighlightStyles
   | ExtensionsForFormat T.Text
   | DefaultTemplate T.Text
-  | AstSchema
 
 instance FromJSON Query where
   parseJSON = withObject "Query" $ \o -> do
@@ -60,7 +57,6 @@ instance FromJSON Query where
       "highlight-styles" -> pure HighlightStyles
       "default-template" -> DefaultTemplate <$> o .: "format"
       "extensions-for-format" -> ExtensionsForFormat <$> o .: "format"
-      "ast-schema" -> pure AstSchema
       _ -> fail $ "Unknown query type " <> queryType
 
 -- | Answer a JSON-encoded query with JSON.
@@ -109,7 +105,6 @@ answer q = case q of
         defExts = getDefaultExtensions format
         addExt x = M.insert (drop 4 (show x)) (extensionEnabled x defExts)
     jsonOut $ foldr addExt mempty (extensionsToList allExts)
-  AstSchema -> pure astSchema
  where
   jsonOut :: forall a. ToJSON a => a -> IO B.ByteString
   jsonOut = pure . BL.toStrict . Aeson.encode

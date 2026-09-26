@@ -6,7 +6,7 @@
 #                                   lib/pandoc.def on Windows)
 #   $1/lib/libpandoc/              (Linux, macOS: the Haskell shared libraries
 #                                   libpandoc.so needs; its RPATH points here)
-#   $1/share/libpandoc/ast-schema.json
+#   $1/share/libpandoc/api-version.json  (written by the smoke test)
 #   $1/share/libpandoc/examples/smoke.c
 #
 # On Linux and macOS, GHC's static libraries are not position-independent

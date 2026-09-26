@@ -24,7 +24,7 @@ Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
 |---|---|
 | `pandoc_convert(options, input)` | a conversion; `options` is a JSON object in [defaults-file](https://pandoc.org/MANUAL.html#defaults-files) format, `input` is stdin |
 | `pandoc_convert_args(argc, argv, input)` | the same with command-line arguments, parsed by pandoc itself |
-| `pandoc_query(query)` | formats, extensions, templates, versions, and the AST schema, as JSON |
+| `pandoc_query(query)` | formats, extensions, templates and versions, as JSON |
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
 
 The Haskell runtime starts on first use, without installing signal
@@ -39,22 +39,13 @@ side uses only what upstream's own `pandoc.wasm` uses (`Opt`'s JSON
 decoder, `defaultOpts`, `convertWithOpts`, the Lua engine), plus
 `parseOptionsFromArgs`, so upstream keeps it working.
 
-### The AST schema
+### The AST
 
-`{"query": "ast-schema"}` returns every type in pandoc's document AST,
-reified from pandoc-types at compile time with Template Haskell
-(`src/LibPandoc/SchemaTH.hs`):
-
-```json
-{"pandoc-api-version": [1,23,1,2], "root": "Pandoc", "types": [
-  {"name": "Block", "kind": "data", "constructors": [
-    {"name": "Header", "fields": [{"name": null, "type": {"prim": "int"}},
-                                  {"name": null, "type": {"ref": "Attr"}},
-                                  {"name": null, "type": {"list": {"ref": "Inline"}}}]}, ...
-```
-
-Bindings generate their AST types from it, so a new pandoc-types needs no
-hand-copied definitions. A type the generator doesn't know stops the build.
+Documents cross the ABI as pandoc's JSON (`to: json`, `from: json`),
+versioned by `pandoc-api-version` (`{"query": "api-version"}`). For the AST
+as types in other languages, generated from pandoc-types, see
+[libpandoc-ast](https://github.com/ickc/libpandoc-ast), which needs no
+libpandoc.
 
 ## Building
 
@@ -70,7 +61,7 @@ cc test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' -o d
 
 `dist/` is then a relocatable prefix: `include/libpandoc.h`,
 `lib/libpandoc.so` (`.dylib`; `bin/pandoc.dll` on Windows) and
-`share/libpandoc/ast-schema.json`.
+`share/libpandoc/api-version.json`.
 
 On Linux and macOS, cabal links foreign libraries against Haskell shared
 libraries, and on x86-64 Linux GHC's static libraries aren't
