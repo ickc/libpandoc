@@ -2,7 +2,8 @@
 # Stage the built library into a self-contained prefix:
 #
 #   $1/include/libpandoc.h
-#   $1/lib/libpandoc.so            (.dylib on macOS; bin/pandoc.dll on Windows)
+#   $1/lib/libpandoc.so            (.dylib on macOS; bin/pandoc.dll and
+#                                   lib/pandoc.def on Windows)
 #   $1/lib/libpandoc/              (Linux, macOS: the Haskell shared libraries
 #                                   libpandoc.so needs; its RPATH points here)
 #   $1/share/libpandoc/ast-schema.json
@@ -77,8 +78,7 @@ MINGW* | MSYS* | CYGWIN*)
 	mkdir -p "$out/bin"
 	dll=$(find dist-newstyle -name 'pandoc.dll' -path '*/f/pandoc/*' | head -1)
 	cp "$dll" "$out/bin/pandoc.dll"
-	# import library for linking with MSVC or MinGW
-	gendef - "$out/bin/pandoc.dll" >"$out/lib/pandoc.def" 2>/dev/null ||
-		{ echo "EXPORTS"; nm -g --defined-only "$dll" | awk '$3 ~ /^pandoc_/ {print $3}'; } >"$out/lib/pandoc.def"
+	# the export list, for making an import library (MSVC: lib /def:pandoc.def)
+	cp libpandoc.def "$out/lib/pandoc.def"
 	;;
 esac
