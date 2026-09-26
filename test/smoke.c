@@ -14,6 +14,8 @@ static void check(int ok, const char *what)
 int main(int argc, char **argv)
 {
     pandoc_result *r;
+    /* unbuffered, so a crash shows how far it got */
+    setvbuf(stdout, NULL, _IONBF, 0);
     const char *opts = "{\"from\": \"markdown\", \"to\": \"html\"}";
     const char *md = "# Hello *world*\n";
 
@@ -31,7 +33,15 @@ int main(int argc, char **argv)
     check(r && r->status == 0 && strstr(r->output, "\\emph{world}"), "convert_args");
     pandoc_result_free(r);
 
-    /* an error from the argv form, with no stdin */
+    /* errors from the argv form: with stdin, without, informational */
+    const char *badarg[] = {"-t", "nonesuch"};
+    r = pandoc_convert_args(2, badarg, md, strlen(md));
+    check(r && r->status != 0, "argv error, with stdin");
+    pandoc_result_free(r);
+    r = pandoc_convert_args(2, badarg, NULL, 0);
+    check(r && r->status != 0, "argv error, without stdin");
+    pandoc_result_free(r);
+
     const char *ver[] = {"--version"};
     r = pandoc_convert_args(1, ver, NULL, 0);
     check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
