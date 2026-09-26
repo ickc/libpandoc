@@ -40,7 +40,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import Data.List (stripPrefix)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -59,7 +59,9 @@ import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..), convertWithOpts
 import Text.Pandoc.Class (PandocMonad)
 import Text.Pandoc.Definition (Pandoc)
 import Text.Pandoc.Error (PandocError (..), renderError)
+import Text.Pandoc.Extensions (extensionsToList, showExtension)
 import Text.Pandoc.Filter (Environment (..))
+import qualified Text.Pandoc.Format as Format
 import Text.Pandoc.Logging (Verbosity (ERROR))
 import Text.Pandoc.Lua (getEngine)
 import Text.Pandoc.Scripting (ScriptingEngine (..))
@@ -134,8 +136,8 @@ callbackFilters n (Aeson.Object o)
 callbackFilters _ v = Right v
 
 -- | The engine, answering callback filters' paths by calling them.
-withCallbacks :: Ptr () -> ScriptingEngine -> ScriptingEngine
-withCallbacks filters engine
+withCallbacks :: Ptr () -> Opt -> ScriptingEngine -> ScriptingEngine
+withCallbacks filters opts engine
   | filters == nullPtr = engine
   | otherwise = engine { engineApplyFilter = apply }
   where
@@ -143,18 +145,22 @@ withCallbacks filters engine
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
     apply env args path doc = case stripPrefix callbackPrefix path of
       Just i | [(k, "")] <- reads i -> do
-        r <- liftIO $ runCallback filters k env args doc
+        r <- liftIO $ runCallback filters k opts env args doc
         either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
                pure r
       _ -> engineApplyFilter engine env args path doc
 
--- | Call callback filter @k@ on a document, as a JSON filter is run.
-runCallback :: Ptr () -> Int -> Environment -> [String] -> Pandoc
+-- | Call callback filter @k@ on a document, as a JSON filter is run, and
+-- also tell it the input and output formats (with extensions), which JSON
+-- filters aren't told.
+runCallback :: Ptr () -> Int -> Opt -> Environment -> [String] -> Pandoc
             -> IO (Either T.Text Pandoc)
-runCallback filters k env args doc = bracket bufferNew bufferFree $ \buf -> do
+runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf -> do
   let docJson = BL.toStrict (Aeson.encode doc)
       context = BL.toStrict $ Aeson.encode $ Aeson.object
         [ "format" .= listToMaybe args
+        , "input-format" .= inputFormat opts
+        , "output-format" .= outputFormat opts
         , "reader-options" .= envReaderOptions env ]
   status <- B.useAsCStringLen docJson $ \(dp, dl) ->
     B.useAsCStringLen context $ \(cp, cl) ->
@@ -175,7 +181,7 @@ hsConvertArgs argc argv inPtr inLen hasIn = respond $ do
   input <- peekInput inPtr inLen hasIn
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
-    Right opts -> convert id opts input
+    Right opts -> convert (const id) opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -195,10 +201,31 @@ peekInput ptr len has
   | has == 0  = pure Nothing
   | otherwise = Just <$> peekBytes ptr len
 
+-- | The input format pandoc reads with these options, as 'convertWithOpts'
+-- decides it: @from@, else from the input files' names, else markdown.
+inputFormat :: Opt -> T.Text
+inputFormat opts = fromMaybe deduced (optFrom opts)
+  where
+    deduced = maybe "markdown" renderFormat $ Format.formatFromFilePaths $
+      fromMaybe ["-"] (optInputFiles opts)
+
+-- | The output format: @to@, else from the output file's name, else html.
+outputFormat :: Opt -> T.Text
+outputFormat opts = fromMaybe deduced (optTo opts)
+  where
+    deduced = maybe "html" renderFormat $ Format.formatFromFilePaths $
+      maybe [] pure (optOutputFile opts)
+
+renderFormat :: Format.FlavoredFormat -> T.Text
+renderFormat (Format.FlavoredFormat name diff) =
+  name <> exts "+" (Format.extsToEnable diff) <> exts "-" (Format.extsToDisable diff)
+  where
+    exts sign = T.concat . map ((sign <>) . showExtension) . extensionsToList
+
 -- | Run a conversion as the pandoc CLI would, but with @input@ (if given) as
 -- stdin and stdout captured, and the Lua engine adapted by @engineWith@.
-convert :: (ScriptingEngine -> ScriptingEngine) -> Opt -> Maybe B.ByteString
-        -> IO Result
+convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Opt
+        -> Maybe B.ByteString -> IO Result
 convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
   let stdinFile = tmp </> "stdin"
       -- an extension, so that zip output (chunkedhtml) is written as bytes
@@ -237,7 +264,7 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
             Nothing | toStdout -> Just "html"
             t -> t
         }
-  engine <- engineWith <$> getEngine
+  engine <- engineWith opts' <$> getEngine
   convertWithOpts engine opts'
   out <- if toStdout then B.readFile stdoutFile else pure B.empty
   logged <- doesFileExist logFile

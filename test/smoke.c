@@ -151,7 +151,9 @@ int main(int argc, char **argv)
         check(r && r->status == 0 && calls == 1
               && strcmp(r->output, "<h1 id=\"hello-world\">Hello <em>world</em></h1>\n") == 0,
               "callback filter: identity, called once");
-        check(strstr(last_context, "\"format\":\"html\"") && strstr(last_context, "\"reader-options\""),
+        check(strstr(last_context, "\"format\":\"html\"") && strstr(last_context, "\"reader-options\"")
+              && strstr(last_context, "\"input-format\":\"markdown\"")
+              && strstr(last_context, "\"output-format\":\"html\""),
               "callback filter: context");
         printf("      context: %.120s\n", last_context);
         pandoc_result_free(r);
@@ -174,6 +176,15 @@ int main(int argc, char **argv)
         const char *o4 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 3}]}";
         r = pandoc_convert_filters(o4, strlen(o4), md, strlen(md), fs, 4);
         check(r && r->status == 0 && nested_ok, "callback filter: calls libpandoc again");
+        pandoc_result_free(r);
+
+        const char *o6 = "{\"from\": \"commonmark_x-smart\", \"to\": \"html5+smart\", "
+                         "\"filters\": [{\"type\": \"callback\", \"index\": 0}]}";
+        r = pandoc_convert_filters(o6, strlen(o6), md, strlen(md), fs, 4);
+        check(r && r->status == 0 && strstr(last_context, "\"input-format\":\"commonmark_x-smart\"")
+              && strstr(last_context, "\"output-format\":\"html5+smart\"")
+              && strstr(last_context, "\"format\":\"html5\""),
+              "callback filter: context has the formats with extensions");
         pandoc_result_free(r);
 
         const char *o5 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 4}]}";

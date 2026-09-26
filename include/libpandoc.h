@@ -102,10 +102,15 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *
  * fn receives:
  *   doc:     the document, as pandoc's JSON;
- *   context: a JSON object: "format", the output format's name (what a JSON
- *            filter gets as its first argument, e.g. "html5"), and
- *            "reader-options", the reader's options (what a JSON filter gets
- *            in PANDOC_READER_OPTIONS).
+ *   context: a JSON object:
+ *            "format": the output format's name, what a JSON filter gets as
+ *              its first argument, e.g. "html5";
+ *            "input-format", "output-format": the formats pandoc reads and
+ *              writes, with extensions, as pandoc decided them (from the
+ *              options, else the file names), e.g. "commonmark_x-smart",
+ *              "html5+smart". JSON filters aren't told these;
+ *            "reader-options": the reader's options, what a JSON filter gets
+ *              in PANDOC_READER_OPTIONS.
  * Neither is NUL-terminated, and both are valid only during the call.
  *
  * fn returns 0 and puts the new document, as pandoc's JSON, in out with
