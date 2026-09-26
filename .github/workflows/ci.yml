@@ -36,7 +36,9 @@ jobs:
       - name: Read pins
         run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
 
+      # Linux builds in a manylinux container instead (scripts/manylinux.sh)
       - name: Set up GHC
+        if: runner.os != 'Linux'
         id: ghc
         uses: haskell-actions/setup@v2.12.1
         with:
@@ -46,19 +48,37 @@ jobs:
       - name: Install native tools
         run: |
           case "$RUNNER_OS" in
-            Linux) sudo apt-get update && sudo apt-get install -y --no-install-recommends libgmp-dev patchelf ;;
             macOS) brew install gmp ;;
           esac
+
+      - name: Locate cabal store
+        id: store
+        run: |
+          if [[ $RUNNER_OS == Linux ]]; then
+            # ghcup and the cabal store of the manylinux container
+            echo "path=$HOME/manylinux-cache" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=${{ steps.ghc.outputs.cabal-store }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Restore cabal store
         id: cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ steps.ghc.outputs.cabal-store }}
+          path: ${{ steps.store.outputs.path }}
           key: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-${{ env.INDEX_STATE }}-${{ hashFiles('libpandoc.cabal', 'cabal.project') }}
           restore-keys: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-
 
+      - name: Build (manylinux_2_28 container)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$HOME/manylinux-cache"
+          docker run --rm -v "$PWD:/work" -v "$HOME/manylinux-cache:/cache" -w /work \
+            -e CABALOPTS=-j -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            "quay.io/pypa/manylinux_2_28_$(uname -m)" bash scripts/manylinux.sh dist
+
       - name: Build
+        if: runner.os != 'Linux'
         env:
           CABALOPTS: -j
           # Homebrew's gmp, for GHC's bignum library
@@ -69,9 +89,11 @@ jobs:
         if: always() && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ${{ steps.ghc.outputs.cabal-store }}
+          path: ${{ steps.store.outputs.path }}
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
+      # On Linux this also checks portability: built against glibc 2.28, run
+      # on the runner's Ubuntu.
       - name: Smoke test (C)
         run: |
           case "$RUNNER_OS" in

@@ -70,7 +70,7 @@ hsConvertArgs argc argv inPtr inLen hasIn = respond $ do
     Right opts -> convert opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
-      "informational option (" <> T.pack (conNameOf info) <>
+      "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
       ") is not supported by pandoc_convert_args; use pandoc_query"
 
 hsQuery :: Ptr CChar -> CSize -> IO (Ptr ())
