@@ -9,6 +9,7 @@
 #include "libpandoc.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <HsFFI.h>
 #include <Rts.h>
 
@@ -18,6 +19,9 @@ extern pandoc_result *libpandoc_hs_convert(char *options, size_t options_len,
 extern pandoc_result *libpandoc_hs_convert_args(int argc, char **argv,
                                                 char *input, size_t input_len, int has_input);
 extern pandoc_result *libpandoc_hs_query(char *query, size_t query_len);
+extern pandoc_result *libpandoc_hs_convert_filters(char *options, size_t options_len,
+                                                   char *input, size_t input_len, int has_input,
+                                                   void *filters, size_t filters_len);
 
 static int init_status = -1;
 
@@ -93,6 +97,67 @@ pandoc_result *pandoc_convert_args(int argc, const char *const *argv,
     if (pandoc_init() != 0) return NULL;
     return libpandoc_hs_convert_args(argc, (char **)argv,
                                      (char *)input, input_len, input != NULL);
+}
+
+pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
+                                      const char *input, size_t input_len,
+                                      const pandoc_filter *filters, size_t filters_len)
+{
+    if (pandoc_init() != 0) return NULL;
+    return libpandoc_hs_convert_filters((char *)options, options_len,
+                                        (char *)input, input_len, input != NULL,
+                                        (void *)filters, filters_len);
+}
+
+/* Callback filters: the buffer a filter answers in, and the call itself,
+ * for LibPandoc.hs (a C call, so the Haskell side needs no function-pointer
+ * wrappers). */
+struct pandoc_buffer {
+    char *data;
+    size_t len;
+};
+
+void pandoc_buffer_set(pandoc_buffer *out, const char *data, size_t len)
+{
+    char *p;
+    if (out == NULL) return;
+    p = malloc(len + 1);
+    if (p == NULL) return;
+    if (len) memcpy(p, data, len);
+    p[len] = '\0';
+    free(out->data);
+    out->data = p;
+    out->len = len;
+}
+
+pandoc_buffer *libpandoc_buffer_new(void)
+{
+    return calloc(1, sizeof(pandoc_buffer));
+}
+
+void libpandoc_buffer_free(pandoc_buffer *b)
+{
+    if (b == NULL) return;
+    free(b->data);
+    free(b);
+}
+
+const char *libpandoc_buffer_data(const pandoc_buffer *b)
+{
+    return b->data;
+}
+
+size_t libpandoc_buffer_len(const pandoc_buffer *b)
+{
+    return b->len;
+}
+
+int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
+                          const char *doc, size_t doc_len,
+                          const char *context, size_t context_len,
+                          pandoc_buffer *out)
+{
+    return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
 }
 
 pandoc_result *pandoc_query(const char *query, size_t query_len)

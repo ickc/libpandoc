@@ -27,9 +27,11 @@ common deps
                     containers,
                     directory,
                     filepath,
+                    mtl,
                     pandoc >= 3.9 && < 4,
                     pandoc-lua-engine,
                     pandoc-types >= 1.23 && < 1.24,
+                    scientific,
                     skylighting,
                     temporary,
                     text

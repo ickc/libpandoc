@@ -1,5 +1,6 @@
 /* Smoke test of the C ABI: cc test/smoke.c -Idist/include -Ldist/lib -lpandoc */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <libpandoc.h>
 
@@ -9,6 +10,63 @@ static void check(int ok, const char *what)
 {
     printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
     if (!ok) failures++;
+}
+
+/* Callback filters. userdata counts calls; the context of the last call is
+ * kept for checking. */
+static char last_context[4096];
+
+static void keep_context(const char *context, size_t len)
+{
+    if (len >= sizeof last_context) len = sizeof last_context - 1;
+    memcpy(last_context, context, len);
+    last_context[len] = '\0';
+}
+
+static int identity(void *userdata, const char *doc, size_t doc_len,
+                    const char *context, size_t context_len, pandoc_buffer *out)
+{
+    ++*(int *)userdata;
+    keep_context(context, context_len);
+    pandoc_buffer_set(out, doc, doc_len);
+    return 0;
+}
+
+/* Upper-cases every "world" in the document's JSON. */
+static int shout(void *userdata, const char *doc, size_t doc_len,
+                 const char *context, size_t context_len, pandoc_buffer *out)
+{
+    (void)userdata; (void)context; (void)context_len;
+    char *copy = malloc(doc_len);
+    memcpy(copy, doc, doc_len);
+    for (size_t i = 0; i + 5 <= doc_len; i++)
+        if (memcmp(copy + i, "world", 5) == 0) memcpy(copy + i, "WORLD", 5);
+    pandoc_buffer_set(out, copy, doc_len);
+    free(copy);
+    return 0;
+}
+
+static int fail(void *userdata, const char *doc, size_t doc_len,
+                const char *context, size_t context_len, pandoc_buffer *out)
+{
+    (void)userdata; (void)doc; (void)doc_len; (void)context; (void)context_len;
+    const char *msg = "boom from the callback";
+    pandoc_buffer_set(out, msg, strlen(msg));
+    return 1;
+}
+
+/* Calls libpandoc again from inside the conversion. */
+static int nested(void *userdata, const char *doc, size_t doc_len,
+                  const char *context, size_t context_len, pandoc_buffer *out)
+{
+    (void)context; (void)context_len;
+    const char *o = "{\"from\": \"markdown\", \"to\": \"latex\"}";
+    const char *in = "*inner*";
+    pandoc_result *r = pandoc_convert(o, strlen(o), in, strlen(in));
+    *(int *)userdata = r && r->status == 0 && strstr(r->output, "\\emph{inner}") != NULL;
+    pandoc_result_free(r);
+    pandoc_buffer_set(out, doc, doc_len);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -81,6 +139,53 @@ int main(int argc, char **argv)
     check(r && strstr(r->log, "CouldNotFetchResource"), "warnings are returned in the log");
     if (r) printf("      log: %.160s\n", r->log);
     pandoc_result_free(r);
+
+    /* callback filters */
+    {
+        int calls = 0, nested_ok = 0;
+        pandoc_filter fs[] = {
+            {identity, &calls}, {shout, NULL}, {fail, NULL}, {nested, &nested_ok},
+        };
+        const char *o1 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 0}]}";
+        r = pandoc_convert_filters(o1, strlen(o1), md, strlen(md), fs, 4);
+        check(r && r->status == 0 && calls == 1
+              && strcmp(r->output, "<h1 id=\"hello-world\">Hello <em>world</em></h1>\n") == 0,
+              "callback filter: identity, called once");
+        check(strstr(last_context, "\"format\":\"html\"") && strstr(last_context, "\"reader-options\""),
+              "callback filter: context");
+        printf("      context: %.120s\n", last_context);
+        pandoc_result_free(r);
+
+        const char *o2 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 1},"
+                         " {\"type\": \"callback\", \"index\": 0}]}";
+        r = pandoc_convert_filters(o2, strlen(o2), md, strlen(md), fs, 4);
+        check(r && r->status == 0 && strstr(r->output, "<em>WORLD</em>") && calls == 2,
+              "callback filter: changes the document, in order");
+        pandoc_result_free(r);
+
+        const char *o3 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 2}]}";
+        r = pandoc_convert_filters(o3, strlen(o3), md, strlen(md), fs, 4);
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocFilterError") == 0
+              && strstr(r->error_message, "boom from the callback"),
+              "callback filter: its error fails the conversion");
+        if (r && r->error_message) printf("      %s\n", r->error_message);
+        pandoc_result_free(r);
+
+        const char *o4 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 3}]}";
+        r = pandoc_convert_filters(o4, strlen(o4), md, strlen(md), fs, 4);
+        check(r && r->status == 0 && nested_ok, "callback filter: calls libpandoc again");
+        pandoc_result_free(r);
+
+        const char *o5 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 4}]}";
+        r = pandoc_convert_filters(o5, strlen(o5), md, strlen(md), fs, 4);
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
+              "callback filter: index out of range");
+        pandoc_result_free(r);
+
+        r = pandoc_convert(o1, strlen(o1), md, strlen(md));
+        check(r && r->status != 0, "callback filter: none given to pandoc_convert");
+        pandoc_result_free(r);
+    }
 
     /* smoke API.json: also save the pandoc API version, e.g. [1,23,1,2] */
     if (argc > 1) {

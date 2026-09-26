@@ -90,6 +90,53 @@ LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_
 LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *argv,
                                                  const char *input, size_t input_len);
 
+/* Filters implemented by the caller, run inside a conversion.
+ *
+ * A conversion's "filters" option may list, among pandoc's own (Lua and JSON
+ * filter paths, "citeproc"), entries {"type": "callback", "index": i}. At
+ * that point of the conversion pandoc calls filters[i].fn, as it would run
+ * a JSON filter, but in this process and on the thread that called
+ * pandoc_convert_filters. Everything else about the conversion is as with
+ * pandoc_convert, so it is one pandoc run: what a reader keeps in memory
+ * (such as images embedded in a docx) reaches the writer.
+ *
+ * fn receives:
+ *   doc:     the document, as pandoc's JSON;
+ *   context: a JSON object: "format", the output format's name (what a JSON
+ *            filter gets as its first argument, e.g. "html5"), and
+ *            "reader-options", the reader's options (what a JSON filter gets
+ *            in PANDOC_READER_OPTIONS).
+ * Neither is NUL-terminated, and both are valid only during the call.
+ *
+ * fn returns 0 and puts the new document, as pandoc's JSON, in out with
+ * pandoc_buffer_set; or returns nonzero and puts a UTF-8 error message in
+ * out, which fails the conversion with a PandocFilterError.
+ *
+ * fn may call libpandoc again (pandoc_convert, pandoc_query, ...), for
+ * example to parse a fragment of text; those are separate conversions. */
+typedef struct pandoc_buffer pandoc_buffer;
+
+typedef int (*pandoc_filter_fn)(void *userdata,
+                                const char *doc, size_t doc_len,
+                                const char *context, size_t context_len,
+                                pandoc_buffer *out);
+
+typedef struct pandoc_filter {
+    pandoc_filter_fn fn;
+    void *userdata;
+} pandoc_filter;
+
+/* Set the contents of out (copied). May be called more than once; the last
+ * call wins. */
+LIBPANDOC_API void pandoc_buffer_set(pandoc_buffer *out, const char *data, size_t len);
+
+/* pandoc_convert, with filters the options refer to as
+ * {"type": "callback", "index": i}, i < filters_len. */
+LIBPANDOC_API pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
+                                                    const char *input, size_t input_len,
+                                                    const pandoc_filter *filters,
+                                                    size_t filters_len);
+
 /* Ask pandoc for information. query is a JSON object with a "query" key:
  *   {"query": "version"}                  pandoc version, e.g. "3.11"
  *   {"query": "api-version"}              pandoc-types API version, [1,23,1]
