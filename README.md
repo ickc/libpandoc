@@ -44,7 +44,7 @@ decoder, `defaultOpts`, `convertWithOpts`, the Lua engine), plus
 Documents cross the ABI as pandoc's JSON (`to: json`, `from: json`),
 versioned by `pandoc-api-version` (`{"query": "api-version"}`). For the AST
 as types in other languages, generated from pandoc-types, see
-[libpandoc-ast](https://github.com/ickc/libpandoc-ast), which needs no
+[pandom](https://github.com/ickc/pandom), which needs no
 libpandoc.
 
 ## Building
