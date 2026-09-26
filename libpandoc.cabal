@@ -38,7 +38,9 @@ common deps
 foreign-library pandoc
   import:           deps
   type:             native-shared
-  lib-version-info: 0:0:0
+  -- cabal supports library versioning only on Linux
+  if os(linux)
+    lib-version-info: 0:0:0
   if os(windows)
     options:        standalone
     -- only the C API: a GHC DLL exporting everything exceeds the
