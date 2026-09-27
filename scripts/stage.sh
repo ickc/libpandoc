@@ -28,6 +28,9 @@ case "$(uname -s)" in
 Linux)
 	lib=$(find dist-newstyle -name 'libpandoc.so.*.*.*' -path '*/f/pandoc/*' | head -1)
 	cp "$lib" "$out/lib/libpandoc.so"
+	# Release builds carry no symbol table beyond the exports (as distribution
+	# packages): 248 -> 178 MB. Before patchelf, which strip may undo.
+	strip --strip-unneeded "$out/lib/libpandoc.so"
 	patchelf --set-soname libpandoc.so "$out/lib/libpandoc.so"
 	rm -rf "$out/lib/libpandoc"
 	mkdir -p "$out/lib/libpandoc"
@@ -35,6 +38,8 @@ Linux)
 	ldd "$out/lib/libpandoc.so" | awk '/=> \// {print $3}' |
 		grep -E '/(libHS[^/]*|libffi[^/]*)$' | while read -r dep; do
 		cp -L "$dep" "$out/lib/libpandoc/"
+		chmod u+w "$out/lib/libpandoc/$(basename "$dep")"
+		strip --strip-unneeded "$out/lib/libpandoc/$(basename "$dep")"
 	done
 	# RUNPATH isn't transitive: each library needs its own path to its
 	# siblings and to lib/ (gmp, zlib: from conda, or the system)
@@ -52,6 +57,8 @@ Linux)
 Darwin)
 	lib=$(find dist-newstyle -name 'libpandoc.dylib' -path '*/f/pandoc/*' | head -1)
 	cp "$lib" "$out/lib/libpandoc.dylib"
+	# no local symbols, as on Linux (re-signed below)
+	strip -x "$out/lib/libpandoc.dylib"
 	install_name_tool -id @rpath/libpandoc.dylib "$out/lib/libpandoc.dylib"
 	rm -rf "$out/lib/libpandoc"
 	mkdir -p "$out/lib/libpandoc"
