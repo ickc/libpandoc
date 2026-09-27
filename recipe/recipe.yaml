@@ -72,5 +72,5 @@ about:
   description: |
     A shared library exposing pandoc (${{ pandoc_version }}) through a small,
     stable C ABI: conversions with defaults-file options or command-line
-    arguments, and queries. Its AST is pandoc's JSON; see pandom
+    arguments, and queries. Its AST is pandoc's JSON; see panir
     for it as types in other languages.
