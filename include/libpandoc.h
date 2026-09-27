@@ -39,10 +39,10 @@ extern "C" {
 
 /* The version of this C interface, libpandoc's own. MAJOR changes only when
  * something below changes incompatibly; MINOR when something is added
- * (1.1: callback filters; 1.2: pandoc_read_many). The pandoc inside has its own version, and so
+ * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main). The pandoc inside has its own version, and so
  * does its document AST: pandoc_query "version" and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 2
+#define LIBPANDOC_ABI_VERSION_MINOR 3
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -158,6 +158,23 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
                                                          const pandoc_filter *filters,
                                                          size_t filters_len);
 
+/* The pandoc command, in this process: what running `pandoc` with these
+ * arguments would do. argv[0] is the program's name (for pandoc's usage
+ * messages). pandoc reads standard input and writes standard output and
+ * standard error itself, answers informational options (--version,
+ * --list-*, -D, --help, ...), and reports errors, all as the command does;
+ * the return value is the exit status pandoc would exit with.
+ *
+ * filters_json, if not NULL, is a JSON array (as the "filters" option)
+ * replacing the filters pandoc found in the arguments and defaults files;
+ * it may name filters[i] as {"type": "callback", "index": i}. A
+ * pandoc-compatible command line uses {"query": "parse-args"} to see those
+ * filters, then this to run some of them in process. Not supported: pandoc's
+ * `lua` and `server` subcommands. */
+LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
+                              const char *filters_json, size_t filters_json_len,
+                              const pandoc_filter *filters, size_t filters_len);
+
 /* Read many texts at once: each on its own (nothing carries over between
  * them), all in parallel, with one reader set up once. For filters that
  * parse many fragments, such as table cells; much cheaper than a
@@ -167,9 +184,10 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  *   {"options": {"from": "commonmark_x", "tab-stop": 8, ...},
  *    "inputs": ["*a*", "b", ...]}
  * where "options" are defaults-file keys, of which those that affect
- * reading apply (from, tab-stop, indented-code-classes,
+ * reading apply (from, tab-stop, preserve-tabs, indented-code-classes,
  * default-image-extension, track-changes, strip-comments, abbreviations,
- * data-dir, resource-path).
+ * data-dir, resource-path). Each text is prepared as pandoc prepares its
+ * input (tabs expanded unless preserve-tabs, carriage returns dropped).
  *
  * result->output: a JSON array with, for each input, its document as
  * pandoc's JSON, or {"error": {"kind": ..., "message": ...}}. The call itself
@@ -187,6 +205,11 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         {extension: enabled-by-default}
  *   {"query": "default-template", "format": F}
  *                                         template text
+ *   {"query": "parse-args", "args": [...]}
+ *                                         what pandoc makes of these
+ *                                         command-line arguments: {"filters":
+ *                                         [...]} (defaults files included),
+ *                                         or {"informational": "VersionInfo"}
  * The answer is JSON, in result->output. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 

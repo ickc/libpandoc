@@ -9,5 +9,6 @@ EXPORTS
     pandoc_convert_args_filters
     pandoc_buffer_set
     pandoc_read_many
+    pandoc_main
     pandoc_query
     pandoc_result_free

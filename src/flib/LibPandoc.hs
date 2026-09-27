@@ -33,6 +33,7 @@ answers itself:
 -}
 module LibPandoc () where
 
+import qualified Control.Exception as E
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
 import Control.Concurrent (forkIO)
@@ -62,9 +63,10 @@ import System.Directory (doesFileExist, executable, findExecutable, getPermissio
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
+import System.IO (hFlush, hPutStrLn, stderr, stdout)
 import System.IO.Temp (withSystemTempDirectory)
 import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
-                        convertWithOpts,
+                        convertWithOpts, handleOptInfo,
                         defaultOpts,
                         options, parseOptionsFromArgs)
 import qualified Data.Set as Set
@@ -73,8 +75,9 @@ import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
                           readFileStrict, runIO, setResourcePath, setUserDataDir)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
+import Text.Pandoc.Shared (tabFilter)
 import Text.Pandoc.Definition (Pandoc)
-import Text.Pandoc.Error (PandocError (..), renderError)
+import Text.Pandoc.Error (PandocError (..), handleError, renderError)
 import Text.Pandoc.Extensions (extensionsToList, showExtension)
 import Text.Pandoc.Filter (Environment (..))
 import qualified Text.Pandoc.Format as Format
@@ -97,6 +100,8 @@ foreign export ccall "libpandoc_hs_query"
 foreign export ccall "libpandoc_hs_convert_args_filters"
   hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
                        -> Ptr () -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_main"
+  hsMain :: CInt -> Ptr CString -> Ptr CChar -> CSize -> Ptr () -> CSize -> IO CInt
 foreign export ccall "libpandoc_hs_read_many"
   hsReadMany :: Ptr CChar -> CSize -> IO (Ptr ())
 foreign export ccall "libpandoc_hs_convert_filters"
@@ -304,7 +309,12 @@ readMany opts inputs = do
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
     (reader, exts) <- getReader flvrd
     abbrevs <- readAbbreviations (optAbbreviations opts)
-    pure (reader, def
+    -- as Text.Pandoc.App.Input prepares a text input
+    let spaces | optPreserveTabs opts
+                 || Format.formatName flvrd `elem` ["t2t", "man", "tsv"] = 0
+               | otherwise = optTabStop opts
+        prepared = tabFilter spaces . T.filter (/= '\r')
+    pure (reader, prepared, def
       { readerColumns = optColumns opts
       , readerTabStop = optTabStop opts
       , readerIndentedCodeClasses = optIndentedCodeClasses opts
@@ -315,11 +325,11 @@ readMany opts inputs = do
       , readerStripComments = optStripComments opts
       , readerTypstInputs = optTypstInputs opts
       })
-  (reader, ropts) <- either throwIO pure setup
+  (reader, prepared, ropts) <- either throwIO pure setup
   vars <- mapM (\t -> do
                   v <- newEmptyMVar
                   _ <- forkIO $ do
-                    r <- try (runIO (prepare >> readWith reader ropts t))
+                    r <- try (runIO (prepare >> readWith reader ropts (prepared t)))
                     putMVar v $! either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
                   pure v) inputs
   mapM takeMVar vars
@@ -346,8 +356,71 @@ readAbbreviations mbfilepath =
 hsQuery :: Ptr CChar -> CSize -> IO (Ptr ())
 hsQuery ptr len = respond $ do
   json <- peekBytes ptr len
-  out <- query json
+  out <- case Aeson.decodeStrict json of
+    Just (Aeson.Object o)
+      | KM.lookup "query" o == Just (Aeson.String "parse-args") -> parseArgsQuery o
+    _ -> query json
   pure $ Result out Nothing "[]"
+
+-- | @{"query": "parse-args", "args": [...]}@: what pandoc makes of these
+-- command-line arguments (defaults files included): the filters it would
+-- run, or that they ask for information (@--version@, @--list-*@, ...).
+parseArgsQuery :: Aeson.Object -> IO B.ByteString
+parseArgsQuery o = do
+  args <- case KM.lookup "args" o of
+    Just v | Aeson.Success xs <- Aeson.fromJSON v -> pure (xs :: [String])
+    _ -> throwIO $ PandocOptionError "parse-args needs \"args\", a list of strings"
+  parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
+  case parsed of
+    Right opts -> pure $ BL.toStrict $ Aeson.encode $
+      Aeson.object [ "filters" .= optFilters opts ]
+    Left (OptError e) -> throwIO e
+    Left info -> pure $ BL.toStrict $ Aeson.encode $
+      Aeson.object [ "informational" .= takeWhile (/= ' ') (show info) ]
+
+-- | @pandoc_main@: the pandoc command, in this process. As pandoc-cli's
+-- main (parseOptionsFromArgs, then handleOptInfo or convertWithOpts, errors
+-- through handleError), with its exit as the returned status rather than
+-- the process's. @filters@ (JSON), if given, replaces the filters found in
+-- the arguments, and may name callback filters.
+hsMain :: CInt -> Ptr CString -> Ptr CChar -> CSize -> Ptr () -> CSize -> IO CInt
+hsMain argc argv fPtr fLen filters nFilters = do
+  r <- try $ do
+    (prg, args) <- do
+      all' <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
+      pure $ case all' of
+        p : as -> (p, as)
+        [] -> ("pandoc", [])
+    override <- if fPtr == nullPtr then pure Nothing else do
+      json <- peekBytes fPtr fLen
+      let parsed = do
+            v <- Aeson.eitherDecodeStrict json
+            wrapped <- callbackFilters (fromIntegral nFilters)
+                         (Aeson.object ["filters" .= (v :: Aeson.Value)])
+            case wrapped of
+              Aeson.Object o | Just fs <- KM.lookup "filters" o -> Aeson.parseEither Aeson.parseJSON fs
+              _ -> Left "filters: expected a list"
+      either (throwIO . PandocOptionError . T.pack) (pure . Just) parsed
+    E.handle (handleError . Left) $ do
+      engine <- getEngine
+      res <- parseOptionsFromArgs options defaultOpts prg args
+      case res of
+        Left info -> handleOptInfo engine info
+        Right opts0 -> do
+          let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
+          convertWithOpts (withHooks filters (fromIntegral nFilters) opts engine)
+                          (routeJSONFilters opts)
+  hFlush stdout
+  hFlush stderr
+  case r of
+    Right () -> pure 0
+    Left (e :: SomeException)
+      | Just ExitSuccess <- fromException e -> pure 0
+      | Just (ExitFailure c) <- fromException e -> pure (fromIntegral c)
+      | otherwise -> do
+          hPutStrLn stderr (displayException e)
+          hFlush stderr
+          pure 1
 
 peekBytes :: Ptr CChar -> CSize -> IO B.ByteString
 peekBytes ptr len = B.packCStringLen (ptr, fromIntegral len)

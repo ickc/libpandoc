@@ -20,6 +20,8 @@ extern pandoc_result *libpandoc_hs_convert_args(int argc, char **argv,
                                                 char *input, size_t input_len, int has_input);
 extern pandoc_result *libpandoc_hs_query(char *query, size_t query_len);
 extern pandoc_result *libpandoc_hs_read_many(char *request, size_t request_len);
+extern int libpandoc_hs_main(int argc, char **argv, char *filters_json, size_t filters_json_len,
+                             void *filters, size_t filters_len);
 extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
                                                         char *input, size_t input_len, int has_input,
                                                         void *filters, size_t filters_len);
@@ -175,6 +177,15 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
                           pandoc_buffer *out)
 {
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
+}
+
+int pandoc_main(int argc, const char *const *argv,
+                const char *filters_json, size_t filters_json_len,
+                const pandoc_filter *filters, size_t filters_len)
+{
+    if (pandoc_init() != 0) return 1;
+    return libpandoc_hs_main(argc, (char **)argv, (char *)filters_json, filters_json_len,
+                             (void *)filters, filters_len);
 }
 
 pandoc_result *pandoc_read_many(const char *request, size_t request_len)

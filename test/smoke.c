@@ -241,6 +241,29 @@ int main(int argc, char **argv)
     }
 #endif
 
+    /* the pandoc command, in process */
+    {
+        FILE *f = fopen("main-in.md", "w");
+        fputs("*x*\n", f);
+        fclose(f);
+        const char *ok_args[] = {"pandoc", "-t", "html", "-o", "main-out.html", "main-in.md"};
+        int st = pandoc_main(6, ok_args, NULL, 0, NULL, 0);
+        char out[64] = {0};
+        f = fopen("main-out.html", "r");
+        if (f) { fread(out, 1, sizeof out - 1, f); fclose(f); }
+        check(st == 0 && strcmp(out, "<p><em>x</em></p>\n") == 0, "pandoc_main: converts");
+        const char *bad_args[] = {"pandoc", "-t", "nonesuch", "main-in.md"};
+        st = pandoc_main(4, bad_args, NULL, 0, NULL, 0);
+        check(st == 22, "pandoc_main: pandoc's exit status (22, unknown writer)");
+        int calls = 0;
+        pandoc_filter mf[] = {{identity, &calls}};
+        const char *fj = "[{\"type\": \"callback\", \"index\": 0}]";
+        st = pandoc_main(6, ok_args, fj, strlen(fj), mf, 1);
+        check(st == 0 && calls == 1, "pandoc_main: filters replaced, with a callback");
+        remove("main-in.md");
+        remove("main-out.html");
+    }
+
     /* many fragments at once */
     {
         const char *rq = "{\"options\": {\"from\": \"commonmark_x\"}, \"inputs\": [\"*a*\", \"~~b~~\", \"\"]}";
