@@ -57,7 +57,9 @@ foreign-library pandoc
     -- 65535-export limit
     mod-def-file:   libpandoc.def
   hs-source-dirs:   src/flib
-  build-depends:    libpandoc
+  build-depends:    libpandoc,
+                    -- pandoc lua, as pandoc-cli
+                    hslua-cli >= 1.4.1 && < 1.5
   other-modules:    LibPandoc
   c-sources:        cbits/libpandoc.c
   install-includes: libpandoc.h

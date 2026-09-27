@@ -262,6 +262,28 @@ int main(int argc, char **argv)
         check(st == 0 && calls == 1, "pandoc_main: filters replaced, with a callback");
         remove("main-in.md");
         remove("main-out.html");
+        /* pandoc lua: writes a file, as a Lua script can (not os.exit: that
+         * exits the process, here as in pandoc) */
+        const char *lua_args[] = {"pandoc", "lua", "-e",
+            "local f = io.open('main-lua.txt', 'w');"
+            " f:write(pandoc.write(pandoc.read('*y*'), 'html')); f:close()"};
+        st = pandoc_main(4, lua_args, NULL, 0, NULL, 0);
+        memset(out, 0, sizeof out);
+        f = fopen("main-lua.txt", "r");
+        if (f) { fread(out, 1, sizeof out - 1, f); fclose(f); }
+        check(st == 0 && strcmp(out, "<p><em>y</em></p>") == 0, "pandoc_main: pandoc lua");
+        remove("main-lua.txt");
+        const char *lua_err[] = {"pandoc", "lua", "-e", "error('on purpose')"};
+        st = pandoc_main(4, lua_err, NULL, 0, NULL, 0);
+        check(st == 84, "pandoc_main: pandoc lua's error status (84)");
+        const char *server_args[] = {"pandoc", "server"};
+        st = pandoc_main(2, server_args, NULL, 0, NULL, 0);
+        check(st == 4, "pandoc_main: pandoc server is unsupported (4)");
+        const char *sq = "{\"query\": \"parse-args\", \"args\": [\"lua\", \"-e\", \"x\"]}";
+        r = pandoc_query(sq, strlen(sq));
+        check(r && r->status == 0 && strstr(r->output, "\"subcommand\":\"lua\""),
+              "parse-args: pandoc lua is a subcommand");
+        pandoc_result_free(r);
     }
 
     /* threads */

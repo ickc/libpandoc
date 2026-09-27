@@ -40,10 +40,10 @@ extern "C" {
 /* The version of this C interface, libpandoc's own. MAJOR changes only when
  * something below changes incompatibly; MINOR when something is added
  * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
- * 1.4: pandoc_set_num_threads). The pandoc inside has its own version, and so
+ * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main). The pandoc inside has its own version, and so
  * does its document AST: pandoc_query "version" and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 4
+#define LIBPANDOC_ABI_VERSION_MINOR 5
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -178,8 +178,11 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  * replacing the filters pandoc found in the arguments and defaults files;
  * it may name filters[i] as {"type": "callback", "index": i}. A
  * pandoc-compatible command line uses {"query": "parse-args"} to see those
- * filters, then this to run some of them in process. Not supported: pandoc's
- * `lua` and `server` subcommands. */
+ * filters, then this to run some of them in process.
+ *
+ * `lua` as the first argument (or a program named pandoc-lua) runs pandoc
+ * as a Lua interpreter, as `pandoc lua` does. A script's os.exit exits the
+ * process, as it would pandoc's. `server` is not supported (status 4). */
 LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
                               const char *filters_json, size_t filters_json_len,
                               const pandoc_filter *filters, size_t filters_len);
@@ -219,7 +222,10 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":
  *                                         [...]} (defaults files included),
- *                                         or {"informational": "VersionInfo"}
+ *                                         or {"informational": "VersionInfo"},
+ *                                         or {"subcommand": "lua"} (or
+ *                                         "server"), whose arguments aren't
+ *                                         pandoc's options
  * The answer is JSON, in result->output. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 

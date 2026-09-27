@@ -234,6 +234,10 @@ int pandoc_main(int argc, const char *const *argv,
     if (enter() != 0) return 1;
     r = libpandoc_hs_main(argc, (char **)argv, (char *)filters_json, filters_json_len,
                              (void *)filters, filters_len);
+    /* Lua's print writes through C's stdio, which pandoc's handles don't
+     * flush: before the host writes anything else */
+    fflush(stdout);
+    fflush(stderr);
     leave();
     return r;
 }

@@ -38,7 +38,7 @@ import qualified Control.Exception as E
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
 import Control.Concurrent (forkIO, setNumCapabilities)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -68,8 +68,8 @@ import System.Directory (doesFileExist, executable, findExecutable, getPermissio
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
-import System.IO (hFlush, hPutStrLn, stderr, stdout)
-import System.IO.Temp (withSystemTempDirectory)
+import System.IO (hClose, hFlush, hPutStrLn, stderr, stdout)
+import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
 import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts, handleOptInfo,
                         defaultOpts,
@@ -77,7 +77,7 @@ import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
-                          readFileStrict, runIO, setResourcePath, setUserDataDir)
+                          readFileStrict, runIO, runIOorExplode, setResourcePath, setUserDataDir)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Shared (tabFilter)
@@ -87,7 +87,8 @@ import Text.Pandoc.Extensions (extensionsToList, showExtension)
 import Text.Pandoc.Filter (Environment (..))
 import qualified Text.Pandoc.Format as Format
 import Text.Pandoc.Logging (Verbosity (ERROR))
-import Text.Pandoc.Lua (getEngine)
+import Text.Pandoc.Lua (getEngine, runLua, runLuaNoEnv)
+import HsLua.CLI (EnvBehavior (..), Settings (..), runStandalone)
 import Text.Pandoc.Process (pipeProcess)
 import Text.Pandoc.Scripting (ScriptingEngine (..))
 import qualified Text.Pandoc.UTF8 as UTF8
@@ -421,6 +422,12 @@ parseArgsQuery o = do
   args <- case KM.lookup "args" o of
     Just v | Aeson.Success xs <- Aeson.fromJSON v -> pure (xs :: [String])
     _ -> throwIO $ PandocOptionError "parse-args needs \"args\", a list of strings"
+  case subcommand args of
+    Just sub -> pure $ BL.toStrict $ Aeson.encode $ Aeson.object [ "subcommand" .= sub ]
+    Nothing -> parseArgs args
+
+parseArgs :: [String] -> IO B.ByteString
+parseArgs args = do
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
     Right opts -> pure $ BL.toStrict $ Aeson.encode $
@@ -452,7 +459,14 @@ hsMain argc argv fPtr fLen filters nFilters = do
               Aeson.Object o | Just fs <- KM.lookup "filters" o -> Aeson.parseEither Aeson.parseJSON fs
               _ -> Left "filters: expected a list"
       either (throwIO . PandocOptionError . T.pack) (pure . Just) parsed
-    E.handle (handleError . Left) $ do
+    E.handle (handleError . Left) $ case (takeBaseName prg, subcommand args) of
+     ("pandoc-lua", _) -> runLuaInterpreter prg args
+     (_, Just "lua") -> runLuaInterpreter (prg ++ " lua") (drop 1 args)
+     (_, Just _) -> do
+      hPutStrLn stderr $ "Server mode unsupported.\n" <>
+                         "libpandoc runs pandoc in process; run pandoc server for a server."
+      E.throwIO (ExitFailure 4)
+     _ -> do
       engine <- getEngine
       res <- parseOptionsFromArgs options defaultOpts prg args
       case res of
@@ -472,6 +486,38 @@ hsMain argc argv fPtr fLen filters nFilters = do
           hPutStrLn stderr (displayException e)
           hFlush stderr
           pure 1
+
+-- | pandoc's subcommands: @lua@ and @server@, as the first argument.
+subcommand :: [String] -> Maybe String
+subcommand (a : _) | a `elem` ["lua", "server"] = Just a
+subcommand _ = Nothing
+
+-- | @pandoc lua@: pandoc as a Lua interpreter, compatible with @lua@. From
+-- pandoc-cli's PandocCLI.Lua (GPL-2.0-or-later, © 2022-2024 Albert
+-- Krewinkel), which is in no library. The REPL's history goes to
+-- @PANDOC_REPL_HISTORY@, else to a temporary file.
+runLuaInterpreter :: String -> [String] -> IO ()
+runLuaInterpreter progName args = do
+  mbhistfile <- lookupEnv "PANDOC_REPL_HISTORY"
+  case mbhistfile of
+    Just histfile -> runWithHistory histfile
+    Nothing -> withSystemTempFile "pandoc-hist" $ \fp handle -> do
+      hClose handle
+      runWithHistory fp
+  where
+    runWithHistory histfile =
+      runStandalone Settings
+        { settingsVersionInfo =
+            "\nEmbedded in pandoc " <> pandocVersionText <>
+            "  Copyright (C) 2006-2024 John MacFarlane"
+        , settingsRunner = runner
+        , settingsHistory = Just histfile
+        } progName args
+    runner envBehavior =
+      let runLua' = case envBehavior of
+                      IgnoreEnvVars  -> runLuaNoEnv
+                      ConsultEnvVars -> runLua
+      in handleError <=< runIOorExplode . runLua'
 
 peekBytes :: Ptr CChar -> CSize -> IO B.ByteString
 peekBytes ptr len = B.packCStringLen (ptr, fromIntegral len)
