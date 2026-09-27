@@ -51,7 +51,8 @@ set +a
 	echo "${CABAL_PROJECT_EXTRA:-}"
 } >cabal.project.local
 LIBPANDOC_GHC_LIBDIR=$(ghc --print-libdir)
-export LIBPANDOC_GHC_LIBDIR
+LIBPANDOC_STORE_DIR=$(cabal path --store-dir)
+export LIBPANDOC_GHC_LIBDIR LIBPANDOC_STORE_DIR
 
 cabal update
 # shellcheck disable=SC2086

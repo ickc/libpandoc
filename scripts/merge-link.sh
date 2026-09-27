@@ -51,9 +51,10 @@ esac
 darwin=""
 [[ $(uname -s) == Darwin ]] && darwin=1
 
-# the static archives there are: those of the packages cabal built (next to
-# their shared libraries, in the -L directories), and on macOS GHC's own (in
-# a directory per package under its libdir)
+# the static archives there are: those of the packages cabal built (in the
+# -L directories on Linux, next to their shared libraries; in a directory per
+# package in cabal's store on macOS, which has the shared libraries of all in
+# one), and on macOS GHC's own (in a directory per package under its libdir)
 index=$(mktemp)
 trap 'rm -f "$index"' EXIT
 for a in "${args[@]}"; do
@@ -67,6 +68,8 @@ for a in "${args[@]}"; do
 done
 if [[ -n $darwin ]]; then
 	find "$ghclib" -name 'libHS*.a' >>"$index"
+	find "${LIBPANDOC_STORE_DIR:?set by build.sh: cabal path --store-dir}" \
+		-maxdepth 4 -name 'libHS*.a' >>"$index"
 fi
 
 kept=()
