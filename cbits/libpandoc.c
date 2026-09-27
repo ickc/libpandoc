@@ -19,6 +19,7 @@ extern pandoc_result *libpandoc_hs_convert(char *options, size_t options_len,
 extern pandoc_result *libpandoc_hs_convert_args(int argc, char **argv,
                                                 char *input, size_t input_len, int has_input);
 extern pandoc_result *libpandoc_hs_query(char *query, size_t query_len);
+extern pandoc_result *libpandoc_hs_read_many(char *request, size_t request_len);
 extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
                                                         char *input, size_t input_len, int has_input,
                                                         void *filters, size_t filters_len);
@@ -34,16 +35,16 @@ static void start_runtime(void)
      * command line or GHCRTS is ignored: a bad RTS option makes the RTS exit
      * the process, which a library must never do to its host. The RTS must
      * not take over the host's signal handling (Python's KeyboardInterrupt,
-     * for one). -A8m is what upstream's pandoc binary uses. -maxN8: up to 8
-     * capabilities (fewer on smaller machines), so that conversions from
-     * different host threads run in parallel; -qg: sequential GC, which is
-     * faster for pandoc's workload than parallel GC. */
+     * for one). -A8m is what upstream's pandoc binary uses. -N: a capability
+     * per logical core, so that conversions from different host threads run
+     * in parallel; -qg: sequential GC, which scales better here than
+     * parallel GC (2000 small conversions on 32 threads: 8.5x vs 6.4x). */
     static char *args[] = {"libpandoc", NULL};
     int argc = 1;
     char **argv = args;
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
-    conf.rts_opts = "-A8m -maxN8 -qg --install-signal-handlers=no"
+    conf.rts_opts = "-A8m -N -qg --install-signal-handlers=no"
 #ifdef _WIN32
                     " --install-seh-handlers=no"
 #endif
@@ -174,6 +175,12 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
                           pandoc_buffer *out)
 {
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
+}
+
+pandoc_result *pandoc_read_many(const char *request, size_t request_len)
+{
+    if (pandoc_init() != 0) return NULL;
+    return libpandoc_hs_read_many((char *)request, request_len);
 }
 
 pandoc_result *pandoc_query(const char *query, size_t query_len)

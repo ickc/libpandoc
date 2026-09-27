@@ -25,16 +25,17 @@ Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
 | `pandoc_convert(options, input)` | a conversion; `options` is a JSON object in [defaults-file](https://pandoc.org/MANUAL.html#defaults-files) format, `input` is stdin |
 | `pandoc_convert_args(argc, argv, input)` | the same with command-line arguments, parsed by pandoc itself |
 | `pandoc_convert_filters(options, input, filters, n)` | a conversion with filters implemented by the caller, run in process (below) |
+| `pandoc_read_many(request)` | many texts read at once, each on its own, in parallel: for filters parsing many fragments |
 | `pandoc_query(query)` | formats, extensions, templates and versions, as JSON |
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
 
 The Haskell runtime starts on first use, without installing signal
 handlers, and every Haskell exception becomes an error result: nothing
 exits or crashes the host process. Calls may be made from any thread,
-concurrently, and run in parallel on up to 8 cores.
+concurrently, and run in parallel on all cores.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.1 now; the embedded pandoc's version and its
+are this C interface's own, 1.2 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 

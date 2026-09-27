@@ -35,6 +35,8 @@ module LibPandoc () where
 
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson ((.=))
@@ -65,7 +67,12 @@ import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts,
                         defaultOpts,
                         options, parseOptionsFromArgs)
-import Text.Pandoc.Class (PandocMonad, findFileWithDataFallback)
+import qualified Data.Set as Set
+import Text.Pandoc.Data (readDataFile)
+import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
+                          readFileStrict, runIO, setResourcePath, setUserDataDir)
+import Text.Pandoc.Options (ReaderOptions (..), def)
+import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Definition (Pandoc)
 import Text.Pandoc.Error (PandocError (..), renderError)
 import Text.Pandoc.Extensions (extensionsToList, showExtension)
@@ -90,6 +97,8 @@ foreign export ccall "libpandoc_hs_query"
 foreign export ccall "libpandoc_hs_convert_args_filters"
   hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
                        -> Ptr () -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_read_many"
+  hsReadMany :: Ptr CChar -> CSize -> IO (Ptr ())
 foreign export ccall "libpandoc_hs_convert_filters"
   hsConvertFilters :: Ptr CChar -> CSize -> Ptr CChar -> CSize -> CInt
                    -> Ptr () -> CSize -> IO (Ptr ())
@@ -267,6 +276,72 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
       ") is not supported by pandoc_convert_args; use pandoc_query"
+
+-- | Read many texts, each on its own, in parallel (@pandoc_read_many@).
+hsReadMany :: Ptr CChar -> CSize -> IO (Ptr ())
+hsReadMany ptr len = respond $ do
+  json <- peekBytes ptr len
+  let parsed = do
+        v <- Aeson.eitherDecodeStrict json
+        flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o -> do
+          optsV <- fromMaybe (Aeson.object []) <$> o Aeson..:? "options"
+          f <- Aeson.parseJSON optsV
+          inputs <- o Aeson..: "inputs"
+          pure (f defaultOpts, inputs)
+  case parsed of
+    Left e -> throwIO $ PandocOptionError $ T.pack e
+    Right (opts, inputs) -> do
+      out <- readMany opts inputs
+      pure $ Result (BL.toStrict (Aeson.encode out)) Nothing "[]"
+
+-- | The reader and its options, as 'convertWithOpts' sets them up for a
+-- fragment (not standalone), then every input read with them in its own
+-- thread. A failure is that input's result, as an error object.
+readMany :: Opt -> [T.Text] -> IO [Aeson.Value]
+readMany opts inputs = do
+  setup <- runIO $ do
+    prepare
+    flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
+    (reader, exts) <- getReader flvrd
+    abbrevs <- readAbbreviations (optAbbreviations opts)
+    pure (reader, def
+      { readerColumns = optColumns opts
+      , readerTabStop = optTabStop opts
+      , readerIndentedCodeClasses = optIndentedCodeClasses opts
+      , readerDefaultImageExtension = optDefaultImageExtension opts
+      , readerTrackChanges = optTrackChanges opts
+      , readerAbbreviations = abbrevs
+      , readerExtensions = exts
+      , readerStripComments = optStripComments opts
+      , readerTypstInputs = optTypstInputs opts
+      })
+  (reader, ropts) <- either throwIO pure setup
+  vars <- mapM (\t -> do
+                  v <- newEmptyMVar
+                  _ <- forkIO $ do
+                    r <- try (runIO (prepare >> readWith reader ropts t))
+                    putMVar v $! either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
+                  pure v) inputs
+  mapM takeMVar vars
+  where
+    prepare :: PandocIO ()
+    prepare = do
+      setUserDataDir (optDataDir opts)
+      setResourcePath (optResourcePath opts)
+    readWith :: Reader PandocIO -> ReaderOptions -> T.Text -> PandocIO Pandoc
+    readWith (TextReader r) ro t = r ro t
+    readWith (ByteStringReader r) ro t = r ro (BL.fromStrict (TE.encodeUtf8 t))
+    toPandocError :: SomeException -> PandocError
+    toPandocError e = fromMaybe (PandocSomeError (T.pack (displayException e))) (fromException e)
+    errorValue :: PandocError -> Aeson.Value
+    errorValue e = Aeson.object
+      [ "error" .= Aeson.object [ "kind" .= conNameOf e, "message" .= renderError e ] ]
+
+-- | As pandoc's own (Text.Pandoc.App), which isn't exported.
+readAbbreviations :: PandocMonad m => Maybe FilePath -> m (Set.Set T.Text)
+readAbbreviations mbfilepath =
+  Set.fromList . filter (not . T.null) . T.lines . TE.decodeUtf8With TE.lenientDecode <$>
+    maybe (readDataFile "abbreviations") readFileStrict mbfilepath
 
 hsQuery :: Ptr CChar -> CSize -> IO (Ptr ())
 hsQuery ptr len = respond $ do

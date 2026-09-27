@@ -241,6 +241,27 @@ int main(int argc, char **argv)
     }
 #endif
 
+    /* many fragments at once */
+    {
+        const char *rq = "{\"options\": {\"from\": \"commonmark_x\"}, \"inputs\": [\"*a*\", \"~~b~~\", \"\"]}";
+        r = pandoc_read_many(rq, strlen(rq));
+        check(r && r->status == 0 && r->output[0] == '['
+              && strstr(r->output, "\"Emph\"") && strstr(r->output, "\"Strikeout\"")
+              && strstr(r->output, "\"blocks\":[]"),
+              "read_many: each input read");
+        if (r) printf("      %.100s...\n", r->output);
+        pandoc_result_free(r);
+        const char *rb = "{\"options\": {\"from\": \"nonesuch\"}, \"inputs\": [\"x\"]}";
+        r = pandoc_read_many(rb, strlen(rb));
+        check(r && r->status != 0, "read_many: unknown format is an error");
+        pandoc_result_free(r);
+        const char *rj = "{\"inputs\": 3}";
+        r = pandoc_read_many(rj, strlen(rj));
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
+              "read_many: malformed request is an error");
+        pandoc_result_free(r);
+    }
+
     /* smoke API.json: also save the pandoc API version, e.g. [1,23,1,2] */
     if (argc > 1) {
         const char *aq = "{\"query\": \"api-version\"}";
