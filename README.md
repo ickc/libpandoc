@@ -34,7 +34,9 @@ handlers, and every Haskell exception becomes an error result: nothing
 exits or crashes the host process. Calls may be made from any thread,
 concurrently, and run in parallel: pandoc runs on one thread per logical
 core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
-(read at start, like `OMP_NUM_THREADS`); `pandoc_set_num_threads` changes
+(threads beyond the first start when first used in parallel, so a program
+converting one document doesn't pay for them)
+(like `OMP_NUM_THREADS`); `pandoc_set_num_threads` changes
 it at run time. On a 16-core, 32-thread CPU, 16 threads were as fast as 32
 or faster: set it to the number of physical cores for throughput.
 

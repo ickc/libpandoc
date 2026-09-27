@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -36,9 +37,11 @@ module LibPandoc () where
 import qualified Control.Exception as E
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
-import Control.Concurrent (forkIO, getNumCapabilities, setNumCapabilities)
+import Control.Concurrent (forkIO, setNumCapabilities)
+import Control.Monad (unless, when)
+import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -62,7 +65,7 @@ import GHC.Generics
 import qualified GHC.Foreign as GHC
 import GHC.IO.Encoding (utf8)
 import System.Directory (doesFileExist, executable, findExecutable, getPermissions)
-import System.Environment (getEnvironment)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO (hFlush, hPutStrLn, stderr, stdout)
@@ -102,6 +105,8 @@ foreign export ccall "libpandoc_hs_query"
 foreign export ccall "libpandoc_hs_convert_args_filters"
   hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
                        -> Ptr () -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_expand_threads"
+  hsExpandThreads :: IO ()
 foreign export ccall "libpandoc_hs_set_num_threads"
   hsSetNumThreads :: CInt -> IO CInt
 foreign export ccall "libpandoc_hs_main"
@@ -310,6 +315,7 @@ hsReadMany ptr len = respond $ do
 -- error object.
 readMany :: Opt -> [T.Text] -> IO [B.ByteString]
 readMany opts inputs = do
+  hsExpandThreads
   setup <- runIO $ do
     prepare
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
@@ -376,19 +382,36 @@ hsQuery ptr len = respond $ do
 hsSetNumThreads :: CInt -> IO CInt
 hsSetNumThreads n = do
   let n' = max 1 (fromIntegral n)
-  setNumCapabilities n'
-  writeIORef numThreadsSet (Just n')
+  writeIORef threadsSet (Just n')
+  expanded <- readIORef threadsExpanded
+  when expanded $ setNumCapabilities n'
   pure (fromIntegral n')
 
--- | The number of capabilities: as set, else as started. (Not
--- getNumCapabilities alone, which after a decrease still reports the
--- capabilities that exist, disabled or not.)
-numThreads :: IO Int
-numThreads = maybe getNumCapabilities pure =<< readIORef numThreadsSet
+-- | The runtime starts with one capability; the others come when first
+-- used in parallel: by 'readMany', or a second call while one runs.
+hsExpandThreads :: IO ()
+hsExpandThreads = do
+  done <- atomicModifyIORef' threadsExpanded (\d -> (True, d))
+  unless done $ setNumCapabilities =<< numThreads
 
-numThreadsSet :: IORef (Maybe Int)
-numThreadsSet = unsafePerformIO (newIORef Nothing)
-{-# NOINLINE numThreadsSet #-}
+-- | The number of capabilities to use: as set, else
+-- @LIBPANDOC_NUM_THREADS@, else one per processor this process may use.
+numThreads :: IO Int
+numThreads = readIORef threadsSet >>= \case
+  Just n -> pure n
+  Nothing -> do
+    env <- lookupEnv "LIBPANDOC_NUM_THREADS"
+    case reads <$> env of
+      Just [(n, "")] | n > 0 -> pure n
+      _ -> getNumProcessors
+
+threadsSet :: IORef (Maybe Int)
+threadsSet = unsafePerformIO (newIORef Nothing)
+{-# NOINLINE threadsSet #-}
+
+threadsExpanded :: IORef Bool
+threadsExpanded = unsafePerformIO (newIORef False)
+{-# NOINLINE threadsExpanded #-}
 
 -- | @{"query": "parse-args", "args": [...]}@: what pandoc makes of these
 -- command-line arguments (defaults files included): the filters it would

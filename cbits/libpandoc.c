@@ -8,6 +8,7 @@
 #define LIBPANDOC_BUILDING 1
 #include "libpandoc.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,37 +34,48 @@ extern pandoc_result *libpandoc_hs_convert_filters(char *options, size_t options
 
 static int init_status = -1;
 
+extern void libpandoc_hs_expand_threads(void);
+
+/* Calls in progress: when a second one starts while another runs, pandoc
+ * gets its threads (the capabilities LIBPANDOC_NUM_THREADS or
+ * pandoc_set_num_threads ask for, else one per core), once. */
+static atomic_int active_calls = 0;
+static atomic_int expanded = 0;
+
+static int enter(void)
+{
+    if (pandoc_init() != 0) return -1;
+    if (atomic_fetch_add(&active_calls, 1) >= 1 && !atomic_exchange(&expanded, 1))
+        libpandoc_hs_expand_threads();
+    return 0;
+}
+
+static void leave(void)
+{
+    atomic_fetch_sub(&active_calls, 1);
+}
+
 static void start_runtime(void)
 {
     /* Options are given as trusted link-time options, and anything from the
      * command line or GHCRTS is ignored: a bad RTS option makes the RTS exit
      * the process, which a library must never do to its host. The RTS must
      * not take over the host's signal handling (Python's KeyboardInterrupt,
-     * for one). -A8m is what upstream's pandoc binary uses. -N: a capability
-     * per logical core, so that conversions from different host threads run
-     * in parallel; -qg: sequential GC, which scales better here than
-     * parallel GC (2000 small conversions on 32 threads: 8.5x vs 6.4x). */
+     * for one). -A8m is what upstream's pandoc binary uses. -N1: one
+     * capability to start with (starting 32 costs ~40 ms, for a program
+     * that may never use them); more come when first used in parallel (see
+     * enter()). -qg: sequential GC, which scales as well here as parallel
+     * GC, without its threads spinning. */
     static char *args[] = {"libpandoc", NULL};
-    static char opts[160];
     int argc = 1;
     char **argv = args;
-    char n[16] = "";
-    /* LIBPANDOC_NUM_THREADS, as OMP_NUM_THREADS: the number of capabilities
-     * (threads running Haskell code); unset or invalid, all logical cores */
-    const char *env = getenv("LIBPANDOC_NUM_THREADS");
-    long threads = env ? strtol(env, NULL, 10) : 0;
-    if (threads > 0 && threads <= 4096)
-        snprintf(n, sizeof n, "%ld", threads);
-    snprintf(opts, sizeof opts, "-A8m -N%s -qg --install-signal-handlers=no%s", n,
-#ifdef _WIN32
-             " --install-seh-handlers=no"
-#else
-             ""
-#endif
-             );
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
-    conf.rts_opts = opts;
+    conf.rts_opts = "-A8m -N1 -qg --install-signal-handlers=no"
+#ifdef _WIN32
+                    " --install-seh-handlers=no"
+#endif
+                    ;
     hs_init_ghc(&argc, &argv, conf);
     init_status = 0;
 }
@@ -108,37 +120,49 @@ int pandoc_abi_version(void)
 pandoc_result *pandoc_convert(const char *options, size_t options_len,
                               const char *input, size_t input_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_convert((char *)options, options_len,
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_convert((char *)options, options_len,
                                 (char *)input, input_len, input != NULL);
+    leave();
+    return r;
 }
 
 pandoc_result *pandoc_convert_args(int argc, const char *const *argv,
                                    const char *input, size_t input_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_convert_args(argc, (char **)argv,
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_convert_args(argc, (char **)argv,
                                      (char *)input, input_len, input != NULL);
+    leave();
+    return r;
 }
 
 pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
                                       const char *input, size_t input_len,
                                       const pandoc_filter *filters, size_t filters_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_convert_filters((char *)options, options_len,
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_convert_filters((char *)options, options_len,
                                         (char *)input, input_len, input != NULL,
                                         (void *)filters, filters_len);
+    leave();
+    return r;
 }
 
 pandoc_result *pandoc_convert_args_filters(int argc, const char *const *argv,
                                            const char *input, size_t input_len,
                                            const pandoc_filter *filters, size_t filters_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_convert_args_filters(argc, (char **)argv,
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_convert_args_filters(argc, (char **)argv,
                                              (char *)input, input_len, input != NULL,
                                              (void *)filters, filters_len);
+    leave();
+    return r;
 }
 
 /* Callback filters: the buffer a filter answers in, and the call itself,
@@ -202,21 +226,30 @@ int pandoc_main(int argc, const char *const *argv,
                 const char *filters_json, size_t filters_json_len,
                 const pandoc_filter *filters, size_t filters_len)
 {
-    if (pandoc_init() != 0) return 1;
-    return libpandoc_hs_main(argc, (char **)argv, (char *)filters_json, filters_json_len,
+    int r;
+    if (enter() != 0) return 1;
+    r = libpandoc_hs_main(argc, (char **)argv, (char *)filters_json, filters_json_len,
                              (void *)filters, filters_len);
+    leave();
+    return r;
 }
 
 pandoc_result *pandoc_read_many(const char *request, size_t request_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_read_many((char *)request, request_len);
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_read_many((char *)request, request_len);
+    leave();
+    return r;
 }
 
 pandoc_result *pandoc_query(const char *query, size_t query_len)
 {
-    if (pandoc_init() != 0) return NULL;
-    return libpandoc_hs_query((char *)query, query_len);
+    pandoc_result *r;
+    if (enter() != 0) return NULL;
+    r = libpandoc_hs_query((char *)query, query_len);
+    leave();
+    return r;
 }
 
 void pandoc_result_free(pandoc_result *result)
