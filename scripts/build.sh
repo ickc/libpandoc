@@ -36,6 +36,13 @@ set +a
 		echo "package libpandoc"
 		echo "  ghc-options: -pgml $PWD/scripts/merge-link.sh"
 		;;
+	Darwin)
+		# the same, but all code is position-independent on macOS: GHC's
+		# own libraries are linked in too, as they are
+		echo "shared: True"
+		echo "package libpandoc"
+		echo "  ghc-options: -pgml $PWD/scripts/merge-link.sh"
+		;;
 	*)
 		# cabal links foreign libraries against Haskell shared libraries
 		echo "shared: True"

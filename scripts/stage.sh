@@ -12,10 +12,9 @@
 # On Linux, the Haskell packages are linked into libpandoc.so itself
 # (scripts/merge-link.sh), except GHC's non-reinstallable libraries (base,
 # ghc-internal, template-haskell, ..., ~11), which come only non-PIC and stay
-# shared. On macOS cabal links foreign libraries dynamically, so libpandoc
-# depends on the dylib of every Haskell package. Either way the shared ones
-# are copied next to it with relative RPATHs. On Windows the DLL is
-# standalone.
+# shared. On macOS all of them are linked in, GHC's own included, leaving
+# only GHC's libffi. Either way the shared ones are copied next to it with
+# relative RPATHs. On Windows the DLL is standalone.
 set -euo pipefail
 
 out=$1
@@ -54,7 +53,9 @@ Darwin)
 	lib=$(find dist-newstyle -name 'libpandoc.dylib' -path '*/f/pandoc/*' | head -1)
 	cp "$lib" "$out/lib/libpandoc.dylib"
 	install_name_tool -id @rpath/libpandoc.dylib "$out/lib/libpandoc.dylib"
+	rm -rf "$out/lib/libpandoc"
 	mkdir -p "$out/lib/libpandoc"
+	shopt -s nullglob # it may need none
 	# Every Haskell dylib that could be referenced, by name: GHC's boot
 	# libraries use @loader_path-relative rpaths, which stop resolving once
 	# copied, so references are looked up here instead. (macOS bash is 3.2:
@@ -103,6 +104,12 @@ Darwin)
 	done
 	# modified binaries need re-signing on Apple Silicon
 	codesign --force -s - "$out/lib/libpandoc.dylib" "$out"/lib/libpandoc/*.dylib
+	n=$(find "$out/lib/libpandoc" -name 'libHS*' | wc -l | tr -d ' ')
+	echo "stage: libpandoc.dylib needs $n Haskell shared libraries"
+	if ((n > 0)); then
+		echo "stage: expected the packages linked in (scripts/merge-link.sh)" >&2
+		exit 1
+	fi
 	;;
 MINGW* | MSYS* | CYGWIN*)
 	mkdir -p "$out/bin"
