@@ -10,5 +10,6 @@ EXPORTS
     pandoc_buffer_set
     pandoc_read_many
     pandoc_main
+    pandoc_set_num_threads
     pandoc_query
     pandoc_result_free

@@ -264,6 +264,20 @@ int main(int argc, char **argv)
         remove("main-out.html");
     }
 
+    /* threads */
+    {
+        const char *nq = "{\"query\": \"num-threads\"}";
+        r = pandoc_query(nq, strlen(nq));
+        int before = r && r->status == 0 ? atoi(r->output) : 0;
+        pandoc_result_free(r);
+        int set = pandoc_set_num_threads(2);
+        r = pandoc_query(nq, strlen(nq));
+        check(before >= 1 && set == 2 && r && strcmp(r->output, "2") == 0,
+              "threads: num-threads query, pandoc_set_num_threads");
+        pandoc_result_free(r);
+        pandoc_set_num_threads(before);
+    }
+
     /* many fragments at once */
     {
         const char *rq = "{\"options\": {\"from\": \"commonmark_x\"}, \"inputs\": [\"*a*\", \"~~b~~\", \"\"]}";

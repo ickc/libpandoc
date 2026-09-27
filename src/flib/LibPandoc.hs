@@ -36,8 +36,10 @@ module LibPandoc () where
 import qualified Control.Exception as E
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, getNumCapabilities, setNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson ((.=))
@@ -48,7 +50,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (stripPrefix)
+import Data.List (intersperse, stripPrefix)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import qualified Data.Text as T
@@ -100,6 +102,8 @@ foreign export ccall "libpandoc_hs_query"
 foreign export ccall "libpandoc_hs_convert_args_filters"
   hsConvertArgsFilters :: CInt -> Ptr CString -> Ptr CChar -> CSize -> CInt
                        -> Ptr () -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_set_num_threads"
+  hsSetNumThreads :: CInt -> IO CInt
 foreign export ccall "libpandoc_hs_main"
   hsMain :: CInt -> Ptr CString -> Ptr CChar -> CSize -> Ptr () -> CSize -> IO CInt
 foreign export ccall "libpandoc_hs_read_many"
@@ -297,12 +301,14 @@ hsReadMany ptr len = respond $ do
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (opts, inputs) -> do
       out <- readMany opts inputs
-      pure $ Result (BL.toStrict (Aeson.encode out)) Nothing "[]"
+      pure $ Result (B.concat ("[" : intersperse "," out ++ ["]"])) Nothing "[]"
 
 -- | The reader and its options, as 'convertWithOpts' sets them up for a
 -- fragment (not standalone), then every input read with them in its own
--- thread. A failure is that input's result, as an error object.
-readMany :: Opt -> [T.Text] -> IO [Aeson.Value]
+-- thread, which also encodes the result (so that all of the work, reading
+-- being lazy, happens in parallel). A failure is that input's result, as an
+-- error object.
+readMany :: Opt -> [T.Text] -> IO [B.ByteString]
 readMany opts inputs = do
   setup <- runIO $ do
     prepare
@@ -330,7 +336,8 @@ readMany opts inputs = do
                   v <- newEmptyMVar
                   _ <- forkIO $ do
                     r <- try (runIO (prepare >> readWith reader ropts (prepared t)))
-                    putMVar v $! either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
+                    let value = either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
+                    putMVar v $! BL.toStrict (Aeson.encode value)
                   pure v) inputs
   mapM takeMVar vars
   where
@@ -359,8 +366,29 @@ hsQuery ptr len = respond $ do
   out <- case Aeson.decodeStrict json of
     Just (Aeson.Object o)
       | KM.lookup "query" o == Just (Aeson.String "parse-args") -> parseArgsQuery o
+      | KM.lookup "query" o == Just (Aeson.String "num-threads") ->
+          BL.toStrict . Aeson.encode <$> numThreads
     _ -> query json
   pure $ Result out Nothing "[]"
+
+-- | @pandoc_set_num_threads@: the number of capabilities, from now on
+-- (at least 1); returns the new number.
+hsSetNumThreads :: CInt -> IO CInt
+hsSetNumThreads n = do
+  let n' = max 1 (fromIntegral n)
+  setNumCapabilities n'
+  writeIORef numThreadsSet (Just n')
+  pure (fromIntegral n')
+
+-- | The number of capabilities: as set, else as started. (Not
+-- getNumCapabilities alone, which after a decrease still reports the
+-- capabilities that exist, disabled or not.)
+numThreads :: IO Int
+numThreads = maybe getNumCapabilities pure =<< readIORef numThreadsSet
+
+numThreadsSet :: IORef (Maybe Int)
+numThreadsSet = unsafePerformIO (newIORef Nothing)
+{-# NOINLINE numThreadsSet #-}
 
 -- | @{"query": "parse-args", "args": [...]}@: what pandoc makes of these
 -- command-line arguments (defaults files included): the filters it would

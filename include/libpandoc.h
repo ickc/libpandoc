@@ -39,10 +39,11 @@ extern "C" {
 
 /* The version of this C interface, libpandoc's own. MAJOR changes only when
  * something below changes incompatibly; MINOR when something is added
- * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main). The pandoc inside has its own version, and so
+ * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
+ * 1.4: pandoc_set_num_threads). The pandoc inside has its own version, and so
  * does its document AST: pandoc_query "version" and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 3
+#define LIBPANDOC_ABI_VERSION_MINOR 4
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -62,6 +63,14 @@ typedef struct pandoc_result {
      * info), as written by --log. Never NULL. */
     char *log;
 } pandoc_result;
+
+/* Threads. pandoc runs on a number of threads (Haskell capabilities), so
+ * that calls from different host threads, and pandoc_read_many, run in
+ * parallel: by default one per logical core the process may use, or
+ * LIBPANDOC_NUM_THREADS (read when the runtime starts, as OMP_NUM_THREADS).
+ * pandoc_set_num_threads changes it from now on (n >= 1) and returns the
+ * new number; {"query": "num-threads"} tells the current one. */
+LIBPANDOC_API int pandoc_set_num_threads(int n);
 
 /* Start the Haskell runtime. Safe to call more than once and from any
  * thread; every other function calls it implicitly. The runtime is started
@@ -205,6 +214,7 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         {extension: enabled-by-default}
  *   {"query": "default-template", "format": F}
  *                                         template text
+ *   {"query": "num-threads"}             the number of threads pandoc uses
  *   {"query": "parse-args", "args": [...]}
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":

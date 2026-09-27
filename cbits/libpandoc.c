@@ -8,6 +8,7 @@
 #define LIBPANDOC_BUILDING 1
 #include "libpandoc.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <HsFFI.h>
@@ -20,6 +21,7 @@ extern pandoc_result *libpandoc_hs_convert_args(int argc, char **argv,
                                                 char *input, size_t input_len, int has_input);
 extern pandoc_result *libpandoc_hs_query(char *query, size_t query_len);
 extern pandoc_result *libpandoc_hs_read_many(char *request, size_t request_len);
+extern int libpandoc_hs_set_num_threads(int n);
 extern int libpandoc_hs_main(int argc, char **argv, char *filters_json, size_t filters_json_len,
                              void *filters, size_t filters_len);
 extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
@@ -42,15 +44,26 @@ static void start_runtime(void)
      * in parallel; -qg: sequential GC, which scales better here than
      * parallel GC (2000 small conversions on 32 threads: 8.5x vs 6.4x). */
     static char *args[] = {"libpandoc", NULL};
+    static char opts[160];
     int argc = 1;
     char **argv = args;
+    char n[16] = "";
+    /* LIBPANDOC_NUM_THREADS, as OMP_NUM_THREADS: the number of capabilities
+     * (threads running Haskell code); unset or invalid, all logical cores */
+    const char *env = getenv("LIBPANDOC_NUM_THREADS");
+    long threads = env ? strtol(env, NULL, 10) : 0;
+    if (threads > 0 && threads <= 4096)
+        snprintf(n, sizeof n, "%ld", threads);
+    snprintf(opts, sizeof opts, "-A8m -N%s -qg --install-signal-handlers=no%s", n,
+#ifdef _WIN32
+             " --install-seh-handlers=no"
+#else
+             ""
+#endif
+             );
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
-    conf.rts_opts = "-A8m -N -qg --install-signal-handlers=no"
-#ifdef _WIN32
-                    " --install-seh-handlers=no"
-#endif
-                    ;
+    conf.rts_opts = opts;
     hs_init_ghc(&argc, &argv, conf);
     init_status = 0;
 }
@@ -177,6 +190,12 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
                           pandoc_buffer *out)
 {
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
+}
+
+int pandoc_set_num_threads(int n)
+{
+    if (pandoc_init() != 0) return 0;
+    return libpandoc_hs_set_num_threads(n);
 }
 
 int pandoc_main(int argc, const char *const *argv,
