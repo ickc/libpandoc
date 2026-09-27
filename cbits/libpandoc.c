@@ -64,14 +64,18 @@ static void start_runtime(void)
      * for one). -A8m is what upstream's pandoc binary uses. -N1: one
      * capability to start with (starting 32 costs ~40 ms, for a program
      * that may never use them); more come when first used in parallel (see
-     * enter()). -qg: sequential GC, which scales as well here as parallel
-     * GC, without its threads spinning. */
+     * enter()). Parallel GC, but -qi1: not waking capabilities that were
+     * idle for the last GC, so that one conversion at a time pays nothing
+     * for the idle ones. Converting 64 documents of 800 paragraphs on 16
+     * threads then takes 1.3 s (sequential GC, -qg: 3.1 s; one thread:
+     * 5.4 s either way). Never with -qn, which with -qi crashes GHC's GC
+     * (see UPSTREAM.md). */
     static char *args[] = {"libpandoc", NULL};
     int argc = 1;
     char **argv = args;
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
-    conf.rts_opts = "-A8m -N1 -qg --install-signal-handlers=no"
+    conf.rts_opts = "-A8m -N1 -qi1 --install-signal-handlers=no"
 #ifdef _WIN32
                     " --install-seh-handlers=no"
 #endif
