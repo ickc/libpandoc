@@ -443,12 +443,12 @@ parseArgs args = do
 -- the arguments, and may name callback filters.
 hsMain :: CInt -> Ptr CString -> Ptr CChar -> CSize -> Ptr () -> CSize -> IO CInt
 hsMain argc argv fPtr fLen filters nFilters = do
+  (prg, args) <- do
+    all' <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
+    pure $ case all' of
+      p : as -> (p, as)
+      [] -> ("pandoc", [])
   r <- try $ do
-    (prg, args) <- do
-      all' <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
-      pure $ case all' of
-        p : as -> (p, as)
-        [] -> ("pandoc", [])
     override <- if fPtr == nullPtr then pure Nothing else do
       json <- peekBytes fPtr fLen
       let parsed = do
@@ -483,7 +483,8 @@ hsMain argc argv fPtr fLen filters nFilters = do
       | Just ExitSuccess <- fromException e -> pure 0
       | Just (ExitFailure c) <- fromException e -> pure (fromIntegral c)
       | otherwise -> do
-          hPutStrLn stderr (displayException e)
+          -- as GHC's top-level handler reports it for pandoc
+          hPutStrLn stderr (takeBaseName prg ++ ": " ++ displayException e)
           hFlush stderr
           pure 1
 
