@@ -31,7 +31,12 @@ Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
 The Haskell runtime starts on first use, without installing signal
 handlers, and every Haskell exception becomes an error result: nothing
 exits or crashes the host process. Calls may be made from any thread,
-concurrently.
+concurrently, and run in parallel on up to 8 cores.
+
+Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
+are this C interface's own, 1.1 now; the embedded pandoc's version and its
+AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
+are versioned as the pandoc they embed.
 
 The ABI doesn't change with pandoc. What changes with pandoc crosses it
 as formats pandoc itself defines: defaults-file options, and the JSON AST
@@ -51,6 +56,12 @@ options, but in process, on the calling thread, and within one conversion:
 what a reader keeps in memory, such as images embedded in a docx, reaches
 the writer. A callback may call libpandoc again, for example to parse a
 fragment of text.
+
+JSON filters, and callbacks, are also told the input and output formats
+with extensions (`PANDOC_INPUT_FORMAT=commonmark_x-smart`,
+`PANDOC_OUTPUT_FORMAT=html5+smart`), which pandoc doesn't tell JSON filters
+yet; this follows a proposal to upstream (jgm/pandoc#11016), and will follow
+upstream's names if they differ.
 
 ```c
 static int shout(void *data, const char *doc, size_t len,

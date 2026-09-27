@@ -34,13 +34,16 @@ static void start_runtime(void)
      * command line or GHCRTS is ignored: a bad RTS option makes the RTS exit
      * the process, which a library must never do to its host. The RTS must
      * not take over the host's signal handling (Python's KeyboardInterrupt,
-     * for one). -A8m is what upstream's pandoc binary uses. */
+     * for one). -A8m is what upstream's pandoc binary uses. -maxN8: up to 8
+     * capabilities (fewer on smaller machines), so that conversions from
+     * different host threads run in parallel; -qg: sequential GC, which is
+     * faster for pandoc's workload than parallel GC. */
     static char *args[] = {"libpandoc", NULL};
     int argc = 1;
     char **argv = args;
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
-    conf.rts_opts = "-A8m --install-signal-handlers=no"
+    conf.rts_opts = "-A8m -maxN8 -qg --install-signal-handlers=no"
 #ifdef _WIN32
                     " --install-seh-handlers=no"
 #endif

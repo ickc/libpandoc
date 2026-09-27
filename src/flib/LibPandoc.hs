@@ -20,11 +20,16 @@ should rarely need changes when pandoc does.
 'convertWithOpts' reads files and writes a file, so stdin and stdout are
 temporary files, as the wasm build uses a virtual file system.
 
-Callback filters (@pandoc_convert_filters@) use one more public interface:
-the engine's 'engineApplyFilter', which pandoc calls for every Lua filter.
-A callback entry in the options becomes a Lua filter with a reserved path,
-and the engine given to 'convertWithOpts' answers that path by calling the
-caller's function instead of Lua.
+Filters use one more public interface: the engine's 'engineApplyFilter',
+which pandoc calls for every Lua filter. Two kinds of filter become Lua
+filters with reserved paths, which the engine given to 'convertWithOpts'
+answers itself:
+
+* callback filters (@pandoc_convert_filters@): by calling the caller's
+  function;
+* JSON filters: by running them as pandoc does ('runJSONFilter'), but also
+  telling them the input and output formats, in @PANDOC_INPUT_FORMAT@ and
+  @PANDOC_OUTPUT_FORMAT@, as proposed upstream (jgm/pandoc#11016).
 -}
 module LibPandoc () where
 
@@ -39,8 +44,9 @@ import qualified Data.Aeson.Types as Aeson (parseEither)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
+import Data.Char (toLower)
 import Data.List (stripPrefix)
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -50,13 +56,16 @@ import Foreign.C
 import GHC.Generics
 import qualified GHC.Foreign as GHC
 import GHC.IO.Encoding (utf8)
-import System.Directory (doesFileExist)
-import System.FilePath ((</>))
+import System.Directory (doesFileExist, executable, findExecutable, getPermissions)
+import System.Environment (getEnvironment)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO.Temp (withSystemTempDirectory)
-import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..), convertWithOpts,
+import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
+                        convertWithOpts,
                         defaultOpts,
                         options, parseOptionsFromArgs)
-import Text.Pandoc.Class (PandocMonad)
+import Text.Pandoc.Class (PandocMonad, findFileWithDataFallback)
 import Text.Pandoc.Definition (Pandoc)
 import Text.Pandoc.Error (PandocError (..), renderError)
 import Text.Pandoc.Extensions (extensionsToList, showExtension)
@@ -64,7 +73,10 @@ import Text.Pandoc.Filter (Environment (..))
 import qualified Text.Pandoc.Format as Format
 import Text.Pandoc.Logging (Verbosity (ERROR))
 import Text.Pandoc.Lua (getEngine)
+import Text.Pandoc.Process (pipeProcess)
 import Text.Pandoc.Scripting (ScriptingEngine (..))
+import qualified Text.Pandoc.UTF8 as UTF8
+import Text.Pandoc.Version (pandocVersionText)
 
 import LibPandoc.Query (query)
 import LibPandoc.Result
@@ -108,7 +120,7 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (f :: Opt -> Opt) ->
-      convert (withCallbacks filters (fromIntegral nFilters)) (f defaultOpts) input
+      convert (withHooks filters (fromIntegral nFilters)) (f defaultOpts) input
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -138,20 +150,79 @@ callbackFilters n (Aeson.Object o)
     one v = Right v
 callbackFilters _ v = Right v
 
--- | The engine, answering callback filters' paths by calling them.
-withCallbacks :: Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
-withCallbacks filters n opts engine
-  | filters == nullPtr = engine
-  | otherwise = engine { engineApplyFilter = apply }
+-- | The path standing for JSON filter @f@, which 'withHooks' runs.
+jsonPrefix :: String
+jsonPrefix = "libpandoc:json/"
+
+-- | Route JSON filters through the engine, as Lua filters with reserved
+-- paths, so that 'withHooks' runs them. (Not @pandoc-citeproc@, which pandoc
+-- itself looks for among the JSON filters, to warn that it's deprecated.)
+routeJSONFilters :: Opt -> Opt
+routeJSONFilters opts = opts { optFilters = map route (optFilters opts) }
+  where
+    route (JSONFilter f)
+      | takeBaseName f /= "pandoc-citeproc" = LuaFilter (jsonPrefix ++ f)
+    route f = f
+
+-- | The engine, answering the reserved paths: callback filters by calling
+-- them, JSON filters by running them.
+withHooks :: Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
+withHooks filters n opts engine = engine { engineApplyFilter = apply }
   where
     apply :: (PandocMonad m, MonadIO m)
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
-    apply env args path doc = case stripPrefix callbackPrefix path of
-      Just i | [(k, "")] <- reads i, k >= 0, k < n -> do
-        r <- liftIO $ runCallback filters k opts env args doc
-        either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
-               pure r
-      _ -> engineApplyFilter engine env args path doc
+    apply env args path doc
+      | Just i <- stripPrefix callbackPrefix path
+      , [(k, "")] <- reads i, k >= 0, k < n, filters /= nullPtr = do
+          r <- liftIO $ runCallback filters k opts env args doc
+          either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
+                 pure r
+      | Just f <- stripPrefix jsonPrefix path = do
+          -- as pandoc's expandFilterPath does for JSON filters
+          f' <- fromMaybe f <$> findFileWithDataFallback "filters" f
+          liftIO (runJSONFilter opts env args f' doc) >>= either throwError pure
+      | otherwise = engineApplyFilter engine env args path doc
+
+-- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
+-- interpreter by file extension, the same environment), and also tell it
+-- the input and output formats.
+runJSONFilter :: Opt -> Environment -> [String] -> FilePath -> Pandoc
+              -> IO (Either PandocError Pandoc)
+runJSONFilter opts fenv args f doc = do
+  exists <- doesFileExist f
+  isExecutable <- if exists
+                     then executable <$> getPermissions f
+                     else return True
+  let (f', args') = if exists
+        then case map toLower (takeExtension f) of
+               _      | isExecutable -> ("." </> f, args)
+               ".py"  -> ("python", f:args)
+               ".hs"  -> ("runhaskell", f:args)
+               ".pl"  -> ("perl", f:args)
+               ".rb"  -> ("ruby", f:args)
+               ".php" -> ("php", f:args)
+               ".js"  -> ("node", f:args)
+               ".r"   -> ("Rscript", f:args)
+               _      -> (f, args)
+        else (f, args)
+      failed = Left . PandocFilterError (T.pack f)
+  mbExe <- if exists && isExecutable then pure (Just f') else findExecutable f'
+  if isNothing mbExe
+    then pure $ failed $ T.pack $ "Could not find executable " <> f'
+    else do
+      env <- getEnvironment
+      let env' = ("PANDOC_VERSION", T.unpack pandocVersionText)
+               : ("PANDOC_READER_OPTIONS",
+                  UTF8.toStringLazy (Aeson.encode (envReaderOptions fenv)))
+               : ("PANDOC_INPUT_FORMAT", T.unpack (inputFormat opts))
+               : ("PANDOC_OUTPUT_FORMAT", T.unpack (outputFormat opts))
+               : env
+      r <- try $ pipeProcess (Just env') f' args' (Aeson.encode doc)
+      pure $ case r of
+        Left (e :: SomeException) -> failed (T.pack (show e))
+        Right (ExitSuccess, out) -> either (failed . T.pack) Right (Aeson.eitherDecode' out)
+        Right (ExitFailure ec, _) ->
+          failed ("Filter returned error status " <> T.pack (show ec))
 
 -- | Call callback filter @k@ on a document, as a JSON filter is run, and
 -- also tell it the input and output formats (with extensions), which JSON
@@ -191,7 +262,7 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   input <- peekInput inPtr inLen hasIn
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
-    Right opts -> convert (withCallbacks filters (fromIntegral nFilters)) opts input
+    Right opts -> convert (withHooks filters (fromIntegral nFilters)) opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -233,7 +304,8 @@ renderFormat (Format.FlavoredFormat name diff) =
     exts sign = T.concat . map ((sign <>) . showExtension) . extensionsToList
 
 -- | Run a conversion as the pandoc CLI would, but with @input@ (if given) as
--- stdin and stdout captured, and the Lua engine adapted by @engineWith@.
+-- stdin and stdout captured, JSON filters routed through the engine, and
+-- the Lua engine adapted by @engineWith@.
 convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Opt
         -> Maybe B.ByteString -> IO Result
 convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
@@ -275,7 +347,7 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
             t -> t
         }
   engine <- engineWith opts' <$> getEngine
-  convertWithOpts engine opts'
+  convertWithOpts engine (routeJSONFilters opts')
   out <- if toStdout then B.readFile stdoutFile else pure B.empty
   logged <- doesFileExist logFile
   logJson <- if logged then B.readFile logFile else pure "[]"

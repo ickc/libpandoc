@@ -37,8 +37,13 @@ extern "C" {
 #  define LIBPANDOC_API __attribute__((visibility("default")))
 #endif
 
-/* Bumped only when the functions or struct below change incompatibly. */
-#define LIBPANDOC_ABI_VERSION 1
+/* The version of this C interface, libpandoc's own. MAJOR changes only when
+ * something below changes incompatibly; MINOR when something is added
+ * (1.1: callback filters). The pandoc inside has its own version, and so
+ * does its document AST: pandoc_query "version" and "api-version". */
+#define LIBPANDOC_ABI_VERSION_MAJOR 1
+#define LIBPANDOC_ABI_VERSION_MINOR 1
+#define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
     /* 0 on success, nonzero on failure. */
@@ -67,7 +72,9 @@ LIBPANDOC_API int pandoc_init(void);
 /* Stop the Haskell runtime. Optional; call at most once, at process end. */
 LIBPANDOC_API void pandoc_shutdown(void);
 
-/* LIBPANDOC_ABI_VERSION of the loaded library. */
+/* LIBPANDOC_ABI_VERSION of the loaded library (major * 1000 + minor). A
+ * program built against major.minor works with it if the major is the same
+ * and the minor at least as large. */
 LIBPANDOC_API int pandoc_abi_version(void);
 
 /* Convert, like running `pandoc` with a defaults file.

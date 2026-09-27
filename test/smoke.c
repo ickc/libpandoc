@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 #include <libpandoc.h>
 
 static int failures = 0;
@@ -209,6 +212,34 @@ int main(int argc, char **argv)
         check(r && r->status != 0, "callback filter: none given to pandoc_convert");
         pandoc_result_free(r);
     }
+
+#ifndef _WIN32
+    /* JSON filters are told the formats too (PANDOC_INPUT_FORMAT, ...) */
+    {
+        FILE *f = fopen("envfilter.sh", "w");
+        fputs("#!/bin/sh\nprintf '%s|%s|%s' \"$PANDOC_INPUT_FORMAT\" \"$PANDOC_OUTPUT_FORMAT\""
+              " \"$PANDOC_VERSION\" > envfilter.out\ncat\n", f);
+        fclose(f);
+        chmod("envfilter.sh", 0755);
+        const char *oj = "{\"from\": \"commonmark_x-smart\", \"to\": \"html5+smart\", \"filters\": [\"./envfilter.sh\"]}";
+        r = pandoc_convert(oj, strlen(oj), md, strlen(md));
+        char seen[256] = {0};
+        f = fopen("envfilter.out", "r");
+        if (f) { fread(seen, 1, sizeof seen - 1, f); fclose(f); }
+        check(r && r->status == 0 && strncmp(seen, "commonmark_x-smart|html5+smart|3.", 32) == 0,
+              "JSON filter: told the input and output formats");
+        printf("      %s\n", seen);
+        pandoc_result_free(r);
+        const char *ob = "{\"filters\": [\"./no-such-filter\"]}";
+        r = pandoc_convert(ob, strlen(ob), md, strlen(md));
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocFilterError") == 0
+              && strstr(r->error_message, "no-such-filter"), "JSON filter: missing one is an error");
+        if (r && r->error_message) printf("      %s\n", r->error_message);
+        pandoc_result_free(r);
+        remove("envfilter.sh");
+        remove("envfilter.out");
+    }
+#endif
 
     /* smoke API.json: also save the pandoc API version, e.g. [1,23,1,2] */
     if (argc > 1) {
