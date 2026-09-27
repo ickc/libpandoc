@@ -9,10 +9,13 @@
 #   $1/share/libpandoc/api-version.json  (written by the smoke test)
 #   $1/share/libpandoc/examples/smoke.c
 #
-# On Linux and macOS, GHC's static libraries are not position-independent
-# (Linux) or cabal links foreign libraries dynamically (both), so libpandoc
-# depends on the libHS*.so of every Haskell package. They are copied next to
-# it with relative RPATHs. On Windows the DLL is standalone.
+# On Linux, the Haskell packages are linked into libpandoc.so itself
+# (scripts/merge-link.sh), except GHC's non-reinstallable libraries (base,
+# ghc-internal, template-haskell, ..., ~11), which come only non-PIC and stay
+# shared. On macOS cabal links foreign libraries dynamically, so libpandoc
+# depends on the dylib of every Haskell package. Either way the shared ones
+# are copied next to it with relative RPATHs. On Windows the DLL is
+# standalone.
 set -euo pipefail
 
 out=$1
@@ -27,6 +30,7 @@ Linux)
 	lib=$(find dist-newstyle -name 'libpandoc.so.*.*.*' -path '*/f/pandoc/*' | head -1)
 	cp "$lib" "$out/lib/libpandoc.so"
 	patchelf --set-soname libpandoc.so "$out/lib/libpandoc.so"
+	rm -rf "$out/lib/libpandoc"
 	mkdir -p "$out/lib/libpandoc"
 	# every Haskell library it loads (and GHC's libffi), resolved by the loader
 	ldd "$out/lib/libpandoc.so" | awk '/=> \// {print $3}' |
@@ -39,6 +43,12 @@ Linux)
 		patchelf --set-rpath '$ORIGIN:$ORIGIN/..' "$so"
 	done
 	patchelf --set-rpath '$ORIGIN/libpandoc:$ORIGIN' "$out/lib/libpandoc.so"
+	n=$(find "$out/lib/libpandoc" -name 'libHS*' | wc -l)
+	echo "stage: libpandoc.so needs $n Haskell shared libraries"
+	if ((n > 20)); then
+		echo "stage: expected the packages linked in (scripts/merge-link.sh)" >&2
+		exit 1
+	fi
 	;;
 Darwin)
 	lib=$(find dist-newstyle -name 'libpandoc.dylib' -path '*/f/pandoc/*' | head -1)

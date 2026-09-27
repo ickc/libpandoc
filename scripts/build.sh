@@ -18,6 +18,24 @@ set +a
 	echo "constraints: pandoc ==$PANDOC_VERSION"
 	case "$(uname -s)" in
 	MINGW* | MSYS* | CYGWIN*) ;; # a standalone DLL, linked statically
+	Linux)
+		# cabal links foreign libraries against Haskell shared libraries...
+		echo "shared: True"
+		# ...but scripts/merge-link.sh then links the packages cabal builds
+		# into libpandoc.so from their static archives, which must be
+		# position-independent: every package built -fPIC, and GHC's
+		# reinstallable boot packages rebuilt so (the others, which
+		# template-haskell's installed instance needs, stay shared)
+		echo "constraints: binary source, bytestring source, containers source,"
+		echo "             directory source, exceptions source, filepath source,"
+		echo "             mtl source, os-string source, parsec source, process source,"
+		echo "             stm source, text source, time source, transformers source,"
+		echo "             unix source"
+		echo "package *"
+		echo "  ghc-options: -fPIC -fexternal-dynamic-refs"
+		echo "package libpandoc"
+		echo "  ghc-options: -pgml $PWD/scripts/merge-link.sh"
+		;;
 	*)
 		# cabal links foreign libraries against Haskell shared libraries
 		echo "shared: True"
@@ -25,6 +43,8 @@ set +a
 	esac
 	echo "${CABAL_PROJECT_EXTRA:-}"
 } >cabal.project.local
+LIBPANDOC_GHC_LIBDIR=$(ghc --print-libdir)
+export LIBPANDOC_GHC_LIBDIR
 
 cabal update
 # shellcheck disable=SC2086
