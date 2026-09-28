@@ -173,6 +173,24 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           PYODIDE="$RUNNER_TEMP/pyodide" PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) node wasm/test-pyodide.mjs
 
+      # libpandoc-python's own tests, on its Pyodide backend, with Python and
+      # pandoc sharing Pyodide's filesystem as in a browser; the three that
+      # need threads are expected to fail
+      - name: libpandoc-python's tests in Pyodide
+        run: |
+          source ~/.ghc-wasm/env
+          (cd wasm && npm ci)
+          git clone --depth 1 https://github.com/ickc/libpandoc-python "$RUNNER_TEMP/libpandoc-python"
+          set +e
+          SHIM=1 PYODIDE="$RUNNER_TEMP/pyodide" PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) \
+            LIBPANDOC_PYTHON="$RUNNER_TEMP/libpandoc-python" node wasm/test-pyodide-suite.mjs tests/test_api.py tests/test_ast.py \
+            --deselect tests/test_api.py::test_threads \
+            --deselect tests/test_api.py::test_num_threads \
+            --deselect tests/test_api.py::test_num_threads_from_the_environment
+          status=$?
+          set -e
+          exit $status
+
       - name: Test in browsers (Chromium, Firefox, WebKit)
         run: |
           mkdir -p "$RUNNER_TEMP/browsers" && cd "$RUNNER_TEMP/browsers"

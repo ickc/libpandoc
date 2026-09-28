@@ -44,6 +44,6 @@ import os, sys
 os.chdir("/src")
 sys.path.insert(0, "/src/src")
 import pytest
-pytest.main(list(ARGS))
+int(pytest.main(list(ARGS)))
 `);
 process.exitCode = Number(code);
