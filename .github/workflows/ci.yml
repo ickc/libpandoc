@@ -123,7 +123,7 @@ jobs:
           name: libpandoc-${{ matrix.subdir }}
           path: libpandoc-${{ matrix.subdir }}.tar.gz
 
-  # libpandoc.wasm (wasm/README.md), tested in Node and in Pyodide
+  # libpandoc.wasm (wasm/README.md), tested in Node, Pyodide and browsers
   wasm:
     name: libpandoc.wasm
     runs-on: ubuntu-24.04
@@ -172,6 +172,14 @@ jobs:
           python3 -m pip wheel --no-deps -w wheels "panir @ git+https://github.com/ickc/panir#subdirectory=python"
           cd "$GITHUB_WORKSPACE"
           PYODIDE="$RUNNER_TEMP/pyodide" PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) node wasm/test-pyodide.mjs
+
+      - name: Test in browsers (Chromium, Firefox, WebKit)
+        run: |
+          mkdir -p "$RUNNER_TEMP/browsers" && cd "$RUNNER_TEMP/browsers"
+          npm init -y >/dev/null && npm install playwright @bjorn3/browser_wasi_shim@0.4.2
+          npx playwright install --with-deps chromium firefox webkit
+          cd "$GITHUB_WORKSPACE"
+          NODE_MODULES="$RUNNER_TEMP/browsers/node_modules" node wasm/test-browser.mjs
 
       - uses: actions/upload-artifact@v4
         with:

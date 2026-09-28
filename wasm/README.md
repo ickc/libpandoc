@@ -24,9 +24,21 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   provide (a preopened directory, or an in-memory one in the browser).
 - **Not in it:** threads (`read_many` reads one after another), JSON filters
   (WASI can't start processes), `pandoc_main`, `pandoc lua`, PDF, HTTP.
-- **Engines:** it needs a recent V8. Node 26 runs it. Node 22 segfaults on
-  some inputs, and so does upstream's `pandoc.wasm` called through its
-  `convert` export, which is how its JavaScript uses it (through `_start`
-  it's fine).
-- `wasm/libpandoc.mjs` is a minimal Node host (`node:wasi`); a browser host
-  would use `@bjorn3/browser_wasi_shim`, as npm's `pandoc-wasm` does.
+- **Engines** (tested 2026-09-28 with Playwright's browsers,
+  `wasm/test-browser.mjs`): it needs wasm's exnref exception handling (the
+  `try_table` opcode, 0x1f), which pandoc's Lua is compiled with, as in
+  upstream's pandoc.wasm.
+
+  | engine | runs it | rejects it |
+  |---|---|---|
+  | Chromium | 138, 153 | 127, 131, 136 |
+  | Firefox | 132, 155 | 127 |
+  | WebKit (Safari) | 18.2, 18.4, 18.5, 26.6 | 17.4 (times out) |
+  | Node | 26 | 22 segfaults on some inputs (early exnref), as upstream's pandoc.wasm does through its exports |
+
+  Loading takes 0.2 s in Chromium and Firefox, and 1.4 s (WebKit 26.6) to
+  7.7 s (WebKit 18.2) in WebKit. 800 paragraphs of markdown to HTML: 0.3–0.6
+  s, against 0.09 s for native pandoc.
+- **Hosts:** `wasm/core.mjs` is the ABI over wasm memory; `wasm/node.mjs`
+  runs it with `node:wasi` (real directories preopened), `wasm/browser.mjs`
+  with `@bjorn3/browser_wasi_shim` (`/tmp` in memory; run it in a Worker).
