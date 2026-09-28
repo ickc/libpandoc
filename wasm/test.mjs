@@ -73,6 +73,15 @@ test("a failing filter fails the conversion", () => {
                 (e) => e.kind === "PandocFilterError" && /boom/.test(e.message));
 });
 
+test("command-line arguments, and binary output", () => {
+  const [status, out] = pandoc.abi.convertArgs(["-f", "markdown", "-t", "html"], "*hi*");
+  assert.equal(status, 0);
+  assert.equal(new TextDecoder().decode(out), "<p><em>hi</em></p>\n");
+  const docx = pandoc.convert({ to: "docx" }, "# Hi", { bytes: true });
+  assert.equal(String.fromCharCode(docx[0], docx[1]), "PK"); // a zip
+  assert.equal(pandoc.convert({ from: "docx", to: "plain" }, docx), "Hi\n");
+});
+
 test("timing", () => {
   const md = Array.from({ length: 800 }, (_, i) => `Paragraph ${i} with *emphasis* and [a link](u).`).join("\n\n");
   let t = performance.now();

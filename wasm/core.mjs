@@ -1,6 +1,12 @@
 // libpandoc.wasm in any JavaScript host: the C ABI of include/libpandoc.h
 // over wasm memory. The host (node.mjs, browser.mjs) brings WASI and the
 // module; this works the same in both.
+//
+// Two layers:
+// - `abi`: the C functions, bytes in and out, each returning
+//   [status, output, errorKind, errorMessage, log], as libpandoc-python's
+//   `_core` does (a Pyodide backend of it calls this);
+// - the rest: JSON options, strings, errors thrown, filters as JS functions.
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder("utf-8", { fatal: true });
@@ -16,7 +22,9 @@ export class PandocError extends Error {
  *  compiled module, `wasi` the host's WASI: its import object and how it
  *  starts a reactor. */
 export async function start(module, wasi) {
-  const filters = []; // the JS functions of the conversion running now
+  // the filters of the conversions running now: a function taking and
+  // returning bytes (the document, and the context, as pandoc's JSON)
+  const filters = [];
   let ex; // the instance's exports
   const imports = {
     ...wasi.imports,
@@ -25,15 +33,12 @@ export async function start(module, wasi) {
       filter(k, doc, docLen, ctx, ctxLen, out) {
         let status = 0, answer;
         try {
-          const f = filters[k];
-          answer = f.raw
-            ? f.fn(text(doc, docLen), text(ctx, ctxLen))
-            : JSON.stringify(f.fn(JSON.parse(text(doc, docLen)), JSON.parse(text(ctx, ctxLen))));
+          answer = filters[k](copy(doc, docLen), copy(ctx, ctxLen));
         } catch (e) {
           status = 1;
-          answer = String(e?.stack ?? e);
+          answer = utf8.encode(String(e?.message ?? e));
         }
-        const [p, n] = bytes(answer);
+        const [p, n] = alloc(answer);
         ex.pandoc_buffer_set(out, p, n);
         ex.free(p);
         return status;
@@ -47,9 +52,7 @@ export async function start(module, wasi) {
 
   const mem = () => new Uint8Array(ex.memory.buffer);
   const view = () => new DataView(ex.memory.buffer);
-  function text(p, n) {
-    return fromUtf8.decode(mem().subarray(p, p + n));
-  }
+  const copy = (p, n) => mem().slice(p, p + n);
   function cstring(p) {
     if (p === 0) return null;
     const m = mem();
@@ -57,8 +60,8 @@ export async function start(module, wasi) {
     while (m[end] !== 0) end++;
     return fromUtf8.decode(m.subarray(p, end));
   }
-  // a malloc'd copy; the caller frees it
-  function bytes(s) {
+  // a malloc'd copy of bytes or a string; the caller frees it
+  function alloc(s) {
     const b = typeof s === "string" ? utf8.encode(s) : s;
     const p = ex.malloc(Math.max(b.length, 1));
     mem().set(b, p);
@@ -66,36 +69,95 @@ export async function start(module, wasi) {
   }
   // pandoc_result on wasm32: status, output, output_len, error_kind,
   // error_message, log; 4 bytes each
-  function result(r) {
+  function take(r) {
     if (r === 0) throw new Error("libpandoc.wasm: no result");
     const v = view();
-    const status = v.getInt32(r, true);
-    const out = text(v.getUint32(r + 4, true), v.getUint32(r + 8, true));
-    const kind = cstring(v.getUint32(r + 12, true));
-    const message = cstring(v.getUint32(r + 16, true));
-    const log = JSON.parse(cstring(v.getUint32(r + 20, true)) ?? "[]");
+    const res = [
+      v.getInt32(r, true),
+      copy(v.getUint32(r + 4, true), v.getUint32(r + 8, true)),
+      cstring(v.getUint32(r + 12, true)),
+      cstring(v.getUint32(r + 16, true)),
+      cstring(v.getUint32(r + 20, true)) ?? "[]",
+    ];
     ex.pandoc_result_free(r);
-    if (status !== 0) throw new PandocError(kind, message);
-    return { output: out, log };
+    return res;
   }
-  function call(fn, json, input) {
-    const [op, on] = bytes(JSON.stringify(json));
-    let ip = 0, iN = 0;
-    if (input != null) [ip, iN] = bytes(input);
+  // run f with each of `values` malloc'd (null stays NULL), then free them
+  function withAlloc(values, f) {
+    const ptrs = values.map((x) => (x == null ? [0, 0] : alloc(x)));
     try {
-      return result(fn(op, on, ip, iN));
+      return f(...ptrs);
     } finally {
-      ex.free(op);
-      if (ip) ex.free(ip);
+      for (const [p] of ptrs) if (p) ex.free(p);
+    }
+  }
+  function withArgv(args, f) {
+    const ptrs = args.map((a) => alloc(utf8.encode(a + "\0"))[0]);
+    const argv = ex.malloc(4 * Math.max(args.length, 1));
+    ptrs.forEach((p, i) => view().setUint32(argv + 4 * i, p, true));
+    try {
+      return f(args.length, argv);
+    } finally {
+      ptrs.forEach((p) => ex.free(p));
+      ex.free(argv);
+    }
+  }
+  // pandoc_filter[]: {fn = NULL, userdata = base + i}: pandoc's filter i is
+  // filters[base + i]. A filter may itself convert with filters: its own
+  // come after.
+  function withFilters(fns, f) {
+    const base = filters.length;
+    filters.push(...fns);
+    const arr = ex.malloc(8 * Math.max(fns.length, 1));
+    fns.forEach((_, i) => {
+      view().setUint32(arr + 8 * i, 0, true);
+      view().setUint32(arr + 8 * i + 4, base + i, true);
+    });
+    try {
+      return f(arr, fns.length);
+    } finally {
+      ex.free(arr);
+      filters.length = base;
     }
   }
 
+  const abi = {
+    abiVersion: () => ex.pandoc_abi_version(),
+    convert: (options, input) =>
+      withAlloc([options, input], ([op, on], [ip, iN]) => take(ex.pandoc_convert(op, on, ip, iN))),
+    convertArgs: (args, input) =>
+      withArgv(args, (argc, argv) =>
+        withAlloc([input], ([ip, iN]) => take(ex.pandoc_convert_args(argc, argv, ip, iN)))),
+    convertFilters: (options, input, fns) =>
+      withFilters(fns, (arr, n) =>
+        withAlloc([options, input], ([op, on], [ip, iN]) =>
+          take(ex.pandoc_convert_filters(op, on, ip, iN, arr, n)))),
+    convertArgsFilters: (args, input, fns) =>
+      withFilters(fns, (arr, n) =>
+        withArgv(args, (argc, argv) =>
+          withAlloc([input], ([ip, iN]) =>
+            take(ex.pandoc_convert_args_filters(argc, argv, ip, iN, arr, n))))),
+    readMany: (request) => withAlloc([request], ([p, n]) => take(ex.pandoc_read_many(p, n))),
+    query: (q) => withAlloc([q], ([p, n]) => take(ex.pandoc_query(p, n))),
+  };
+
+  // the output, or the error thrown
+  function ok([status, output, kind, message, log]) {
+    if (status !== 0) throw new PandocError(kind, message);
+    return { output, log: JSON.parse(log) };
+  }
+  const str = (b) => fromUtf8.decode(b);
+
   return {
     exports: ex,
-    abiVersion: () => ex.pandoc_abi_version(),
-    /** Convert with defaults-file options; `input` is the standard input. */
-    convert(options, input = null) {
-      return call(ex.pandoc_convert, options, input).output;
+    abi,
+    abiVersion: abi.abiVersion,
+    /** Convert with defaults-file options; `input` (a string or bytes) is
+     *  the standard input. The output is a string (bytes with `bytes`,
+     *  for docx and the like). */
+    convert(options, input = null, { bytes = false } = {}) {
+      const { output } = ok(abi.convert(JSON.stringify(options), input));
+      return bytes ? output : str(output);
     },
     /** Convert, with JS functions as filters: each takes the document as
      *  pandoc's JSON and the context, and returns the new document. Named
@@ -103,48 +165,22 @@ export async function start(module, wasi) {
      *  all of them after the options' own filters. With `raw`, the
      *  functions take and return JSON text (for a library that parses it
      *  itself, such as panir, or for Python in Pyodide). */
-    convertWithFilters(options, input, fns, { raw = false } = {}) {
-      // a filter may itself convert with filters: its own come after
-      const base = filters.length;
-      filters.push(...fns.map((fn) => ({ fn, raw })));
+    convertWithFilters(options, input, fns, { raw = false, bytes = false } = {}) {
       const opts = { ...options };
       if (!opts.filters?.some((f) => f?.type === "callback")) {
         opts.filters = [...(opts.filters ?? []), ...fns.map((_, i) => ({ type: "callback", index: i }))];
       }
-      // pandoc_filter[]: {fn = NULL, userdata = base + i}: pandoc's filter i is
-      // the host's filters[base + i]
-      const arr = ex.malloc(8 * fns.length);
-      fns.forEach((_, i) => {
-        view().setUint32(arr + 8 * i, 0, true);
-        view().setUint32(arr + 8 * i + 4, base + i, true);
-      });
-      const [op, on] = bytes(JSON.stringify(opts));
-      let ip = 0, iN = 0;
-      if (input != null) [ip, iN] = bytes(input);
-      try {
-        return result(ex.pandoc_convert_filters(op, on, ip, iN, arr, fns.length)).output;
-      } finally {
-        ex.free(op);
-        if (ip) ex.free(ip);
-        ex.free(arr);
-        filters.length = base;
-      }
+      const wrapped = fns.map((fn) => raw
+        ? (doc, ctx) => fn(str(doc), str(ctx))
+        : (doc, ctx) => JSON.stringify(fn(JSON.parse(str(doc)), JSON.parse(str(ctx)))));
+      const { output } = ok(abi.convertFilters(JSON.stringify(opts), input, wrapped));
+      return bytes ? output : str(output);
     },
     query(q) {
-      const [p, n] = bytes(JSON.stringify(q));
-      try {
-        return JSON.parse(result(ex.pandoc_query(p, n)).output);
-      } finally {
-        ex.free(p);
-      }
+      return JSON.parse(str(ok(abi.query(JSON.stringify(q))).output));
     },
     readMany(inputs, options = {}) {
-      const [p, n] = bytes(JSON.stringify({ options, inputs }));
-      try {
-        return JSON.parse(result(ex.pandoc_read_many(p, n)).output);
-      } finally {
-        ex.free(p);
-      }
+      return JSON.parse(str(ok(abi.readMany(JSON.stringify({ options, inputs }))).output));
     },
   };
 }
