@@ -123,6 +123,61 @@ jobs:
           name: libpandoc-${{ matrix.subdir }}
           path: libpandoc-${{ matrix.subdir }}.tar.gz
 
+  # libpandoc.wasm (wasm/README.md), tested in Node and in Pyodide
+  wasm:
+    name: libpandoc.wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read pins
+        run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
+
+      - name: Restore wasm cabal store
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ghc-wasm/.cabal
+          key: cabal-wasm-${{ env.GHC_WASM_META_REV }}-${{ env.INDEX_STATE }}-${{ hashFiles('cabal-wasm.project', 'libpandoc.cabal') }}
+          restore-keys: cabal-wasm-${{ env.GHC_WASM_META_REV }}-
+
+      # build tools some dependencies need at configure time (pretty-show,
+      # toml-parser), as in pandoc-forge
+      - name: Install alex and happy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends alex happy
+
+      - name: Build
+        run: bash scripts/build-wasm.sh dist/wasm
+
+      - name: Save wasm cabal store
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ghc-wasm/.cabal
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      # Node from the toolchain: GHC's wasm needs a recent V8 (not Node 22)
+      - name: Test in Node
+        run: |
+          source ~/.ghc-wasm/env
+          node --version
+          node --test wasm/test.mjs
+
+      - name: Test in Pyodide
+        run: |
+          source ~/.ghc-wasm/env
+          mkdir -p "$RUNNER_TEMP/pyodide" && cd "$RUNNER_TEMP/pyodide"
+          npm init -y >/dev/null && npm install pyodide@314.0.7
+          python3 -m pip wheel --no-deps -w wheels "panir @ git+https://github.com/ickc/panir#subdirectory=python"
+          cd "$GITHUB_WORKSPACE"
+          PYODIDE="$RUNNER_TEMP/pyodide" PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) node wasm/test-pyodide.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-libpandoc
+          path: dist/wasm/libpandoc.wasm
+
   # Every push to main replaces the assets of the `continuous` pre-release,
   # which downstream CI (libpandoc-python) downloads.
   publish:
