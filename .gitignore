@@ -3,3 +3,4 @@ dist/
 cabal.project.local*
 .pixi/
 dist-wasm/
+wasm/node_modules/

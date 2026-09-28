@@ -1,0 +1,10 @@
+{
+  "name": "libpandoc-wasm-host",
+  "private": true,
+  "description": "JavaScript hosts for libpandoc.wasm (Node, browsers, Pyodide) and their tests",
+  "type": "module",
+  "license": "GPL-2.0-or-later",
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "0.4.2"
+  }
+}

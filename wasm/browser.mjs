@@ -12,8 +12,12 @@ import { start } from "./core.mjs";
 export { PandocError } from "./core.mjs";
 
 /** `source`: a URL (fetched and compiled as it streams), a Response, or the
- *  module's bytes. `files`: files pandoc may read, {"/tmp/name": bytes}. */
-export async function load(source, { files = {} } = {}) {
+ *  module's bytes. `files`: files pandoc may read, {"/tmp/name": bytes}.
+ *  `tmp`: a directory to be pandoc's /tmp instead of an in-memory one, and
+ *  `preopens`: more directories, as WASI preopens (for instance Pyodide's
+ *  filesystem, with emscripten-fs.mjs, so that Python and pandoc share
+ *  files). */
+export async function load(source, { files = {}, tmp: tmpDir = null, preopens = [] } = {}) {
   const tmp = new Map();
   for (const [path, data] of Object.entries(files)) {
     if (!path.startsWith("/tmp/")) throw new Error(`files go in /tmp: ${path}`);
@@ -23,8 +27,10 @@ export async function load(source, { files = {} } = {}) {
     new OpenFile(new File([])), // stdin
     ConsoleStdout.lineBuffered((line) => console.log(`[libpandoc] ${line}`)),
     ConsoleStdout.lineBuffered((line) => console.warn(`[libpandoc] ${line}`)),
-    new PreopenDirectory("/tmp", tmp),
+    tmpDir ?? new PreopenDirectory("/tmp", tmp),
+    ...preopens,
   ];
+  if (tmpDir && Object.keys(files).length) throw new Error("files go in the in-memory /tmp: not with tmp");
   const wasi = new WASI(["libpandoc"], ["TMPDIR=/tmp"], fds);
   const module = source instanceof URL || typeof source === "string"
     ? await WebAssembly.compileStreaming(fetch(source))
