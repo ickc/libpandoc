@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, join } from "node:path";
-import { load } from "./libpandoc.mjs";
+import { load } from "./node.mjs";
 
 const require = createRequire(join(process.env.PYODIDE, "package.json"));
 const { loadPyodide } = require("pyodide");

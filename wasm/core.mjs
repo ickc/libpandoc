@@ -1,19 +1,6 @@
-// libpandoc.wasm in Node.js: the C ABI of include/libpandoc.h over wasm
-// memory. A spike: enough to convert, query, read many, and run JS filters
-// inside a conversion.
-//
-//   import { load } from "./libpandoc.mjs";
-//   const pandoc = await load("dist/wasm/libpandoc.wasm");
-//   pandoc.convert({ from: "markdown", to: "html" }, "*hi*");
-//
-// pandoc writes its temporary files in /tmp, which is a real directory
-// preopened for it.
-
-import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { WASI } from "node:wasi";
+// libpandoc.wasm in any JavaScript host: the C ABI of include/libpandoc.h
+// over wasm memory. The host (node.mjs, browser.mjs) brings WASI and the
+// module; this works the same in both.
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder("utf-8", { fatal: true });
@@ -25,20 +12,14 @@ export class PandocError extends Error {
   }
 }
 
-export async function load(path, { preopens } = {}) {
-  const tmp = mkdtempSync(join(tmpdir(), "libpandoc-wasm-"));
-  const wasi = new WASI({
-    version: "preview1",
-    args: ["libpandoc"],
-    env: { TMPDIR: "/tmp" },
-    preopens: { "/tmp": tmp, ...preopens },
-    returnOnExit: true,
-  });
-  const module = await WebAssembly.compile(await readFile(path));
+/** The library over an instance of libpandoc.wasm: `module` is the
+ *  compiled module, `wasi` the host's WASI: its import object and how it
+ *  starts a reactor. */
+export async function start(module, wasi) {
   const filters = []; // the JS functions of the conversion running now
   let ex; // the instance's exports
   const imports = {
-    ...wasi.getImportObject(),
+    ...wasi.imports,
     libpandoc: {
       // int filter(void *userdata, doc, doc_len, context, context_len, out)
       filter(k, doc, docLen, ctx, ctxLen, out) {
@@ -109,8 +90,6 @@ export async function load(path, { preopens } = {}) {
 
   return {
     exports: ex,
-    /** The host directory pandoc sees as /tmp. */
-    tmp,
     abiVersion: () => ex.pandoc_abi_version(),
     /** Convert with defaults-file options; `input` is the standard input. */
     convert(options, input = null) {
