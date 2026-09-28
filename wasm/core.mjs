@@ -25,8 +25,10 @@ export async function start(module, wasi) {
       filter(k, doc, docLen, ctx, ctxLen, out) {
         let status = 0, answer;
         try {
-          const context = JSON.parse(text(ctx, ctxLen));
-          answer = JSON.stringify(filters[k](JSON.parse(text(doc, docLen)), context));
+          const f = filters[k];
+          answer = f.raw
+            ? f.fn(text(doc, docLen), text(ctx, ctxLen))
+            : JSON.stringify(f.fn(JSON.parse(text(doc, docLen)), JSON.parse(text(ctx, ctxLen))));
         } catch (e) {
           status = 1;
           answer = String(e?.stack ?? e);
@@ -98,11 +100,13 @@ export async function start(module, wasi) {
     /** Convert, with JS functions as filters: each takes the document as
      *  pandoc's JSON and the context, and returns the new document. Named
      *  in `options.filters` as {type: "callback", index: i}; by default,
-     *  all of them after the options' own filters. */
-    convertWithFilters(options, input, fns) {
+     *  all of them after the options' own filters. With `raw`, the
+     *  functions take and return JSON text (for a library that parses it
+     *  itself, such as panir, or for Python in Pyodide). */
+    convertWithFilters(options, input, fns, { raw = false } = {}) {
       // a filter may itself convert with filters: its own come after
       const base = filters.length;
-      filters.push(...fns);
+      filters.push(...fns.map((fn) => ({ fn, raw })));
       const opts = { ...options };
       if (!opts.filters?.some((f) => f?.type === "callback")) {
         opts.filters = [...(opts.filters ?? []), ...fns.map((_, i) => ({ type: "callback", index: i }))];
