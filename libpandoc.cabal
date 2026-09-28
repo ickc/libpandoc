@@ -48,6 +48,9 @@ library
 foreign-library pandoc
   import:           deps
   type:             native-shared
+  -- wasm has no shared libraries: see the executable libpandoc-wasm
+  if arch(wasm32)
+    buildable:      False
   -- cabal supports library versioning only on Linux
   if os(linux)
     lib-version-info: 0:0:0
@@ -64,3 +67,20 @@ foreign-library pandoc
   c-sources:        cbits/libpandoc.c
   install-includes: libpandoc.h
   ghc-options:      -threaded
+
+-- libpandoc.wasm: the same functions as the shared library, as a WASI
+-- reactor for a wasm host (JavaScript, Pyodide, wasmtime). Built by
+-- scripts/build-wasm.sh with GHC's wasm backend. No threads, no processes,
+-- no `pandoc lua` REPL; a callback filter is a call to the host's import
+-- libpandoc.filter (see cbits/libpandoc.c).
+executable libpandoc-wasm
+  import:           deps
+  if !arch(wasm32)
+    buildable:      False
+  main-is:          Main.hs
+  hs-source-dirs:   src/flib src/wasm
+  build-depends:    libpandoc
+  other-modules:    LibPandoc
+  c-sources:        cbits/libpandoc.c
+  ghc-options:      -no-hs-main -optl-mexec-model=reactor
+                    "-optl-Wl,--export=malloc,--export=free,--export=pandoc_init,--export=pandoc_abi_version,--export=pandoc_convert,--export=pandoc_convert_args,--export=pandoc_convert_filters,--export=pandoc_convert_args_filters,--export=pandoc_read_many,--export=pandoc_query,--export=pandoc_result_free,--export=pandoc_buffer_set"

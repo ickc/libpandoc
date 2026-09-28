@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE FlexibleInstances   #-}
@@ -37,7 +38,7 @@ module LibPandoc () where
 import qualified Control.Exception as E
 import Control.Exception (SomeException, bracket, fromException, displayException,
                           throwIO, try)
-import Control.Concurrent (forkIO, setNumCapabilities)
+import Control.Concurrent (forkIO, rtsSupportsBoundThreads, setNumCapabilities)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -87,8 +88,14 @@ import Text.Pandoc.Extensions (extensionsToList, showExtension)
 import Text.Pandoc.Filter (Environment (..))
 import qualified Text.Pandoc.Format as Format
 import Text.Pandoc.Logging (Verbosity (ERROR))
+#if defined(wasm32_HOST_ARCH)
+import Text.Pandoc.Lua (getEngine)
+#else
 import Text.Pandoc.Lua (getEngine, runLua, runLuaNoEnv)
+#endif
+#if !defined(wasm32_HOST_ARCH)
 import HsLua.CLI (EnvBehavior (..), Settings (..), runStandalone)
+#endif
 import Text.Pandoc.Process (pipeProcess)
 import Text.Pandoc.Scripting (ScriptingEngine (..))
 import qualified Text.Pandoc.UTF8 as UTF8
@@ -385,7 +392,7 @@ hsSetNumThreads n = do
   let n' = max 1 (fromIntegral n)
   writeIORef threadsSet (Just n')
   expanded <- readIORef threadsExpanded
-  when expanded $ setNumCapabilities n'
+  when (expanded && rtsSupportsBoundThreads) $ setNumCapabilities n'
   pure (fromIntegral n')
 
 -- | The runtime starts with one capability; the others come when first
@@ -393,7 +400,8 @@ hsSetNumThreads n = do
 hsExpandThreads :: IO ()
 hsExpandThreads = do
   done <- atomicModifyIORef' threadsExpanded (\d -> (True, d))
-  unless done $ setNumCapabilities =<< numThreads
+  -- (not in the non-threaded runtime, which has one: wasm)
+  unless (done || not rtsSupportsBoundThreads) $ setNumCapabilities =<< numThreads
 
 -- | The number of capabilities to use: as set, else
 -- @LIBPANDOC_NUM_THREADS@, else one per processor this process may use.
@@ -498,6 +506,12 @@ subcommand _ = Nothing
 -- Krewinkel), which is in no library. The REPL's history goes to
 -- @PANDOC_REPL_HISTORY@, else to a temporary file.
 runLuaInterpreter :: String -> [String] -> IO ()
+#if defined(wasm32_HOST_ARCH)
+-- no REPL in the wasm build (hslua-cli isn't built for it), as in pandoc.wasm
+runLuaInterpreter progName _ = do
+  hPutStrLn stderr $ progName <> ": the Lua interpreter is not in libpandoc.wasm"
+  E.throwIO (ExitFailure 4)
+#else
 runLuaInterpreter progName args = do
   mbhistfile <- lookupEnv "PANDOC_REPL_HISTORY"
   case mbhistfile of
@@ -519,6 +533,7 @@ runLuaInterpreter progName args = do
                       IgnoreEnvVars  -> runLuaNoEnv
                       ConsultEnvVars -> runLua
       in handleError <=< runIOorExplode . runLua'
+#endif
 
 peekBytes :: Ptr CChar -> CSize -> IO B.ByteString
 peekBytes ptr len = B.packCStringLen (ptr, fromIntegral len)

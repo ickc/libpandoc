@@ -75,16 +75,28 @@ static void start_runtime(void)
     char **argv = args;
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
+#ifdef __wasm__
+    /* the non-threaded runtime: no -N or -q; -H64m as upstream's pandoc.js */
+    conf.rts_opts = "-A8m -H64m";
+#else
     conf.rts_opts = "-A8m -N1 -qi1 --install-signal-handlers=no"
 #ifdef _WIN32
                     " --install-seh-handlers=no"
 #endif
                     ;
+#endif
     hs_init_ghc(&argc, &argv, conf);
     init_status = 0;
 }
 
-#ifdef _WIN32
+#if defined(__wasm__)
+/* one thread */
+int pandoc_init(void)
+{
+    if (init_status == -1) start_runtime();
+    return init_status;
+}
+#elif defined(_WIN32)
 #include <windows.h>
 static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK start_runtime_once(PINIT_ONCE o, PVOID p, PVOID *c)
@@ -212,11 +224,28 @@ size_t libpandoc_buffer_len(const pandoc_buffer *b)
     return b->len;
 }
 
+#ifdef __wasm__
+/* A wasm host can't easily make function pointers, so a filter whose fn is
+ * NULL is the host's import libpandoc.filter, told the filter's userdata
+ * (the host's own number for it). It answers as a pandoc_filter_fn does,
+ * with pandoc_buffer_set. */
+__attribute__((import_module("libpandoc"), import_name("filter")))
+extern int libpandoc_host_filter(void *userdata,
+                                 const char *doc, size_t doc_len,
+                                 const char *context, size_t context_len,
+                                 pandoc_buffer *out);
+#endif
+
 int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
                           const char *doc, size_t doc_len,
                           const char *context, size_t context_len,
                           pandoc_buffer *out)
 {
+#ifdef __wasm__
+    if (filters[i].fn == NULL)
+        return libpandoc_host_filter(filters[i].userdata, doc, doc_len,
+                                     context, context_len, out);
+#endif
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
 }
 
