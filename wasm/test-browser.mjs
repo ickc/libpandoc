@@ -41,6 +41,9 @@ if (wasmFilters) {
   const bytes = await (await fetch("/filters/upper.wasm")).arrayBuffer();
   const upper = await wasmFilter(bytes, { name: "upper.wasm" });
   check("wasm filter (Rust)", () => pandoc.convertWithFilters({ to: "plain" }, "hello *world*", [upper]) === "HELLO WORLD\\n");
+  const parse = await wasmFilter(await (await fetch("/filters/parse.wasm")).arrayBuffer(), { name: "parse.wasm", pandoc });
+  check("wasm filter calling pandoc", () =>
+    pandoc.convertWithFilters({ to: "html" }, "~~~ parse\\n*a*\\n~~~\\n", [parse]) === "<p><em>a</em></p>\\n");
 }
 let t = performance.now();
 check("800 paragraphs", () => pandoc.convert({ to: "html" }, md(800, "Paragraph with *emphasis* and [a link](u).", "\\n\\n")).length > 0);

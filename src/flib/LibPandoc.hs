@@ -78,7 +78,8 @@ import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
-                          readFileStrict, runIO, runIOorExplode, setResourcePath, setUserDataDir)
+                          readFileStrict, runIO, runIOorExplode, sandbox, setResourcePath,
+                          setUserDataDir)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Shared (tabFilter)
@@ -323,7 +324,8 @@ hsReadMany ptr len = respond $ do
 -- error object.
 readMany :: Opt -> [T.Text] -> IO [B.ByteString]
 readMany opts inputs = do
-  hsExpandThreads
+  -- one text needs no threads (a filter's read_as)
+  when (length inputs > 1) hsExpandThreads
   setup <- runIO $ do
     prepare
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
@@ -334,7 +336,7 @@ readMany opts inputs = do
                  || Format.formatName flvrd `elem` ["t2t", "man", "tsv"] = 0
                | otherwise = optTabStop opts
         prepared = tabFilter spaces . T.filter (/= '\r')
-    pure (reader, prepared, def
+    pure (flvrd, reader, prepared, def
       { readerColumns = optColumns opts
       , readerTabStop = optTabStop opts
       , readerIndentedCodeClasses = optIndentedCodeClasses opts
@@ -345,11 +347,18 @@ readMany opts inputs = do
       , readerStripComments = optStripComments opts
       , readerTypstInputs = optTypstInputs opts
       })
-  (reader, prepared, ropts) <- either throwIO pure setup
+  (flvrd, reader, prepared, ropts) <- either throwIO pure setup
+  -- with "sandbox", as pandoc's --sandbox: a reader reads no file (LaTeX's
+  -- \input, RST's include, ...), for texts that aren't trusted
+  let readOne t
+        | optSandbox opts = sandbox [] $ do
+            (r, _) <- getReader flvrd
+            readWith r ropts (prepared t)
+        | otherwise = readWith reader ropts (prepared t)
   vars <- mapM (\t -> do
                   v <- newEmptyMVar
                   _ <- forkIO $ do
-                    r <- try (runIO (prepare >> readWith reader ropts (prepared t)))
+                    r <- try (runIO (prepare >> readOne t))
                     let value = either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
                     putMVar v $! BL.toStrict (Aeson.encode value)
                   pure v) inputs
@@ -359,7 +368,7 @@ readMany opts inputs = do
     prepare = do
       setUserDataDir (optDataDir opts)
       setResourcePath (optResourcePath opts)
-    readWith :: Reader PandocIO -> ReaderOptions -> T.Text -> PandocIO Pandoc
+    readWith :: PandocMonad m => Reader m -> ReaderOptions -> T.Text -> m Pandoc
     readWith (TextReader r) ro t = r ro t
     readWith (ByteStringReader r) ro t = r ro (BL.fromStrict (TE.encodeUtf8 t))
     toPandocError :: SomeException -> PandocError
@@ -396,7 +405,8 @@ hsSetNumThreads n = do
   pure (fromIntegral n')
 
 -- | The runtime starts with one capability; the others come when first
--- used in parallel: by 'readMany', or a second call while one runs.
+-- used in parallel: by 'readMany' with more than one text, or a second
+-- caller while one call runs (not a call from inside it, by a filter).
 hsExpandThreads :: IO ()
 hsExpandThreads = do
   done <- atomicModifyIORef' threadsExpanded (\d -> (True, d))

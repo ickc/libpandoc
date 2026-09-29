@@ -38,21 +38,32 @@ extern void libpandoc_hs_expand_threads(void);
 
 /* Calls in progress: when a second one starts while another runs, pandoc
  * gets its threads (the capabilities LIBPANDOC_NUM_THREADS or
- * pandoc_set_num_threads ask for, else one per core), once. */
+ * pandoc_set_num_threads ask for, else one per core), once. A call made
+ * from inside another, by a filter callback, runs on the same OS thread
+ * while the outer one waits: it isn't a second caller, and doesn't count
+ * (starting 32 capabilities for it would cost ~34 ms). */
 static atomic_int active_calls = 0;
 static atomic_int expanded = 0;
+
+#if defined(__wasm__)
+static int depth = 0; /* one thread */
+#elif defined(_MSC_VER)
+static __declspec(thread) int depth = 0;
+#else
+static _Thread_local int depth = 0;
+#endif
 
 static int enter(void)
 {
     if (pandoc_init() != 0) return -1;
-    if (atomic_fetch_add(&active_calls, 1) >= 1 && !atomic_exchange(&expanded, 1))
+    if (depth++ == 0 && atomic_fetch_add(&active_calls, 1) >= 1 && !atomic_exchange(&expanded, 1))
         libpandoc_hs_expand_threads();
     return 0;
 }
 
 static void leave(void)
 {
-    atomic_fetch_sub(&active_calls, 1);
+    if (--depth == 0) atomic_fetch_sub(&active_calls, 1);
 }
 
 static void start_runtime(void)

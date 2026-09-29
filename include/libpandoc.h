@@ -40,10 +40,11 @@ extern "C" {
 /* The version of this C interface, libpandoc's own. MAJOR changes only when
  * something below changes incompatibly; MINOR when something is added
  * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
- * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main). The pandoc inside has its own version, and so
- * does its document AST: pandoc_query "version" and "api-version". */
+ * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
+ * pandoc_read_many's "sandbox"). The pandoc inside has its own version, and
+ * so does its document AST: pandoc_query "version" and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 5
+#define LIBPANDOC_ABI_VERSION_MINOR 6
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -198,7 +199,9 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * where "options" are defaults-file keys, of which those that affect
  * reading apply (from, tab-stop, preserve-tabs, indented-code-classes,
  * default-image-extension, track-changes, strip-comments, abbreviations,
- * data-dir, resource-path). Each text is prepared as pandoc prepares its
+ * data-dir, resource-path, sandbox). With "sandbox": true, as pandoc's
+ * --sandbox, readers read no files (LaTeX's \input, RST's include, ...):
+ * for untrusted texts. Each text is prepared as pandoc prepares its
  * input (tabs expanded unless preserve-tabs, carriage returns dropped).
  *
  * result->output: a JSON array with, for each input, its document as
