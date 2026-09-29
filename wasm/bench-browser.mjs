@@ -1,11 +1,19 @@
-// Benchmark: the same filters as Lua, as panir in JavaScript, and as panir
-// in Python (Pyodide), each inside one libpandoc.wasm conversion, in
-// browsers (Playwright), all in a Web Worker.
+// Benchmark: the same filters as Lua, as panir in JavaScript, as panir in
+// Python (Pyodide), and as panir in Rust compiled to wasm (a WASI command,
+// wasm-filter.mjs), each inside one libpandoc.wasm conversion, in browsers
+// (Playwright), all in a Web Worker.
 //
 //   NODE_MODULES=<playwright, @bjorn3/browser_wasi_shim, pyodide>
 //   PANIR=<panir checkout, with ts/dist built> PANIR_WHEEL=<panir wheel>
+//   WASM_FILTERS=<libpandoc-rs's example filters, built for wasm32-wasip1>
 //   DOC=<markdown file, e.g. pandoc's MANUAL.txt>
 //   node wasm/bench-browser.mjs [chromium firefox webkit]
+//
+// Memory: each wasm instance's linear memory (libpandoc.wasm's, Pyodide's,
+// the largest of a Rust filter's instances), in every browser; and the
+// page's whole memory where performance.measureUserAgentSpecificMemory is
+// available (the page is cross-origin isolated for it; headless Chromium 153
+// still doesn't offer it).
 //
 // Workloads (the first two are panir's corpus scenarios, whose Lua, TS and
 // Python versions are tested to make the same document):
@@ -22,6 +30,7 @@ import { basename, extname, join, normalize } from "node:path";
 const nm = process.env.NODE_MODULES;
 const panir = process.env.PANIR;
 const wheel = process.env.PANIR_WHEEL;
+const wasmFilters = process.env.WASM_FILTERS;
 const doc = readFileSync(process.env.DOC, "utf8");
 const runs = +(process.env.RUNS ?? 5);
 const require = createRequire(join(nm, "playwright", "package.json"));
@@ -88,7 +97,7 @@ for (const w of workloads) {
 const json = pandoc.convert({ from: "markdown", to: "json" }, doc);
 results["json only"] = time(() => serialize(parse(json)));
 for (const w of workloads) results["js alone " + w] = time(() => serialize(applyFilter(parse(json), filters[w](), "html")));
-postMessage({ results, out });
+postMessage({ results, out, memory: { pandoc: pandoc.exports.memory.buffer.byteLength } });
 `;
 
 const pyWorker = `
@@ -186,25 +195,62 @@ const json = pandoc.convert({ from: "markdown", to: "json" }, doc);
 const alone = py.globals.get("alone");
 results["json only"] = alone("json only", json, RUNS);
 for (const w of workloads) results["py alone " + w] = alone(w, json, RUNS);
-postMessage({ results, out });
+postMessage({ results, out, memory: { pandoc: pandoc.exports.memory.buffer.byteLength, pyodide: py._module.HEAP8.buffer.byteLength } });
+`;
+
+const rsWorker = `
+import { load } from "/wasm/browser.mjs";
+import { wasmFilter } from "/wasm/wasm-filter.mjs";
+${common}
+let t = performance.now();
+const pandoc = await load("/libpandoc.wasm");
+const loadMs = performance.now() - t;
+t = performance.now();
+const fs = {};
+let bytes = 0;
+for (const w of ["identity", ...workloads]) {
+  const b = await (await fetch("/filters/" + w + ".wasm")).arrayBuffer();
+  bytes += b.byteLength;
+  fs[w] = await wasmFilter(b, { name: w + ".wasm" });
+}
+const compileMs = performance.now() - t;
+const out = {};
+const results = { load: loadMs, "rust compile": compileMs, "rust bytes": bytes };
+results.raw = time(() => pandoc.convertWithFilters(opts, doc, [fs.identity]));
+for (const w of workloads) results["rs " + w] = time(() => (out["rs " + w] = pandoc.convertWithFilters(opts, doc, [fs[w]])));
+const json = new TextEncoder().encode(pandoc.convert({ from: "markdown", to: "json" }, doc));
+const ctx = new TextEncoder().encode(JSON.stringify({ format: "html" }));
+for (const w of workloads) results["rs alone " + w] = time(() => fs[w](json, ctx));
+const filterMemory = Math.max(...Object.values(fs).map((f) => f.memory));
+postMessage({ results, out, memory: { pandoc: pandoc.exports.memory.buffer.byteLength, filter: filterMemory } });
 `;
 
 const page = (worker) => `<!doctype html><script type="module">
 const w = new Worker("/${worker}.mjs", { type: "module" });
-w.onmessage = (e) => { window.result = e.data; };
+w.onmessage = async (e) => {
+  // the whole page's memory, workers included (Chromium, cross-origin isolated)
+  let ua = null;
+  if (self.crossOriginIsolated && performance.measureUserAgentSpecificMemory) {
+    try { ua = (await performance.measureUserAgentSpecificMemory()).bytes; } catch (err) { ua = String(err); }
+  }
+  window.result = { ...e.data, ua };
+};
 w.onerror = (e) => { window.result = { error: (e.message || "worker error") + " " + (e.filename ?? "") + ":" + (e.lineno ?? "") }; };
 </script>`;
 
 const types = { ".mjs": "text/javascript", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".whl": "application/zip", ".zip": "application/zip" };
 const server = createServer((req, res) => {
   const url = decodeURIComponent(new URL(req.url, "http://x").pathname);
-  const send = (type, body) => { res.writeHead(200, { "content-type": type }); res.end(body); };
-  if (url === "/js" || url === "/py") return send("text/html", page(url.slice(1)));
+  // cross-origin isolated, for measureUserAgentSpecificMemory
+  const isolation = { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" };
+  const send = (type, body) => { res.writeHead(200, { "content-type": type, ...isolation }); res.end(body); };
+  if (url === "/js" || url === "/py" || url === "/rs") return send("text/html", page(url.slice(1)));
   if (url === "/js.mjs") return send("text/javascript", jsWorker);
   if (url === "/py.mjs") return send("text/javascript", pyWorker);
+  if (url === "/rs.mjs") return send("text/javascript", rsWorker);
   if (url === "/doc.md") return send("text/plain", doc);
-  if (url === "/wasm/browser.mjs") {
-    return send("text/javascript", readFileSync(join(here, "browser.mjs"), "utf8")
+  if (url === "/wasm/browser.mjs" || url === "/wasm/wasm-filter.mjs") {
+    return send("text/javascript", readFileSync(join(here, url.slice(6)), "utf8")
       .replace('"@bjorn3/browser_wasi_shim"', '"/@bjorn3/browser_wasi_shim/dist/index.js"'));
   }
   let file;
@@ -213,9 +259,10 @@ const server = createServer((req, res) => {
   else if (url.startsWith("/panir/")) file = join(panir, "ts/dist", normalize(url.slice(7)));
   else if (url.startsWith("/pyodide/")) file = join(nm, "pyodide", normalize(url.slice(9)));
   else if (url.startsWith("/wheels/")) file = wheel;
+  else if (url.startsWith("/filters/")) file = join(wasmFilters, normalize(url.slice(9)));
   else if (url.startsWith("/@bjorn3/")) file = join(nm, normalize(url.slice(1)));
   if (!file || !existsSync(file)) { res.writeHead(404); return res.end(); }
-  res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream" });
+  res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream", ...isolation });
   createReadStream(file).pipe(res);
 }).listen(0);
 const base = `http://localhost:${server.address().port}`;
@@ -235,27 +282,42 @@ async function measure(browser, which) {
 }
 
 const kb = (Buffer.byteLength(doc) / 1024).toFixed(0);
+const all = {};
+const mb = (b) => (typeof b === "number" ? (b / 2 ** 20).toFixed(0) + " MB" : String(b));
+const n = (x) => x.toFixed(0);
 for (const name of process.argv.slice(2).length ? process.argv.slice(2) : ["chromium", "firefox", "webkit"]) {
   const browser = await playwright[name].launch();
   const js = await measure(browser, "js");
   const py = await measure(browser, "py");
+  const rs = await measure(browser, "rs");
+  all[name] = { version: browser.version(), js, py, rs };
   console.log(`== ${name} ${browser.version()} (${kb} KB of markdown to HTML, median of ${runs} runs, ms)`);
-  for (const r of [js, py]) if (r.error) console.log(`  error: ${r.error}`);
-  if (!js.error && !py.error) {
-    const J = js.results, P = py.results;
-    console.log(`  load: libpandoc.wasm ${J.load.toFixed(0)}; Pyodide + micropip + panir ${P["pyodide + panir load"].toFixed(0)}`);
-    console.log(`  no filter ${J.none.toFixed(0)}; identity filter (raw JSON): JS ${J.raw.toFixed(0)}, Python ${P.raw.toFixed(0)}`);
-    console.log(`  ${"workload".padEnd(8)} ${"Lua".padStart(6)} ${"JS".padStart(6)} ${"Python".padStart(7)}  same output`);
+  for (const r of [js, py, rs]) if (r.error) console.log(`  error: ${r.error}`);
+  if (!js.error && !py.error && !rs.error) {
+    const J = js.results, P = py.results, R = rs.results;
+    console.log(`  load: libpandoc.wasm ${n(J.load)}; Pyodide + micropip + panir ${n(P["pyodide + panir load"])}; ` +
+      `Rust filters (4, ${(R["rust bytes"] / 1024).toFixed(0)} KB) compiled ${n(R["rust compile"])}`);
+    console.log(`  no filter ${n(J.none)}; identity filter (raw JSON): JS ${n(J.raw)}, Python ${n(P.raw)}, Rust wasm ${n(R.raw)}`);
+    console.log(`  ${"workload".padEnd(9)} ${"Lua".padStart(6)} ${"JS".padStart(6)} ${"Python".padStart(7)} ${"Rust".padStart(6)}  same output`);
     for (const w of ["upper", "modify", "count"]) {
-      const same = js.out["lua " + w] === js.out["js " + w] && js.out["js " + w] === py.out["py " + w];
-      console.log(`  ${w.padEnd(8)} ${J["lua " + w].toFixed(0).padStart(6)} ${J["js " + w].toFixed(0).padStart(6)} ${P["py " + w].toFixed(0).padStart(7)}  ${same ? "yes" : "NO"}`);
+      const outs = [js.out["lua " + w], js.out["js " + w], py.out["py " + w], rs.out["rs " + w]];
+      const same = outs.every((o) => o === outs[0]);
+      console.log(`  ${w.padEnd(9)} ${n(J["lua " + w]).padStart(6)} ${n(J["js " + w]).padStart(6)} ${n(P["py " + w]).padStart(7)} ${n(R["rs " + w]).padStart(6)}  ${same ? "yes" : "NO"}`);
     }
-    console.log(`  the filter alone, on the document's JSON (parse, filter, serialize):`);
-    console.log(`  ${"json only".padEnd(8)} ${"".padStart(6)} ${J["json only"].toFixed(0).padStart(6)} ${P["json only"].toFixed(0).padStart(7)}`);
+    console.log(`  the filter alone, on the document's JSON (parse, filter, serialize; Rust: a new instance, as in a conversion):`);
+    console.log(`  ${"json only".padEnd(9)} ${"".padStart(6)} ${n(J["json only"]).padStart(6)} ${n(P["json only"]).padStart(7)}`);
     for (const w of ["upper", "modify", "count"]) {
-      console.log(`  ${w.padEnd(8)} ${"".padStart(6)} ${J["js alone " + w].toFixed(0).padStart(6)} ${P["py alone " + w].toFixed(0).padStart(7)}`);
+      console.log(`  ${w.padEnd(9)} ${"".padStart(6)} ${n(J["js alone " + w]).padStart(6)} ${n(P["py alone " + w]).padStart(7)} ${n(R["rs alone " + w]).padStart(6)}`);
     }
+    console.log(`  memory: libpandoc.wasm ${mb(js.memory.pandoc)} (JS), ${mb(py.memory.pandoc)} (Python), ${mb(rs.memory.pandoc)} (Rust); ` +
+      `Pyodide ${mb(py.memory.pyodide)}; a Rust filter instance ${mb(rs.memory.filter)}`);
+    if (typeof js.ua === "number") console.log(`  whole page: JS ${mb(js.ua)}, Python ${mb(py.ua)}, Rust ${mb(rs.ua)}`);
   }
   await browser.close();
 }
 server.close();
+if (process.env.BENCH_JSON) {
+  const { writeFileSync } = await import("node:fs");
+  for (const b of Object.values(all)) for (const k of ["js", "py", "rs"]) delete b[k].out;
+  writeFileSync(process.env.BENCH_JSON, JSON.stringify(all, null, 1));
+}

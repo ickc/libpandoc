@@ -46,9 +46,11 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
     const wasi = new WASI([name, ctx.format ?? ""], env, fds, { debug: false });
     const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: wasi.wasiImport });
     const status = wasi.start(instance);
+    run.memory = Math.max(run.memory, instance.exports.memory.buffer.byteLength);
     if (status !== 0) throw new Error(`${name} exited with status ${status}`);
     return stdout.data;
   }
   run.bytes = true;
+  run.memory = 0; // the most memory a run's instance had, in bytes
   return run;
 }
