@@ -13,6 +13,9 @@ const require = createRequire(join(nm, "playwright", "package.json"));
 const playwright = require("playwright");
 const here = new URL(".", import.meta.url).pathname;
 const wasm = process.env.LIBPANDOC_WASM ?? join(here, "../dist/wasm/libpandoc.wasm");
+// libpandoc-rs's example filters built for wasm32-wasip1, if given: a Rust
+// filter run as wasm inside the conversion (wasm-filter.mjs)
+const wasmFilters = process.env.WASM_FILTERS;
 
 const worker = `
 import { load } from "/wasm/browser.mjs";
@@ -22,6 +25,7 @@ function check(name, f) {
   try { const r = f(); results.push({ name, ok: r === true, detail: r === true ? "" : String(r) }); }
   catch (e) { results.push({ name, ok: false, detail: String(e?.message ?? e) }); }
 }
+const wasmFilters = ${JSON.stringify(Boolean(wasmFilters))};
 const t0 = performance.now();
 const pandoc = await load("/libpandoc.wasm", { files: { "/tmp/upper.lua": "function Str(e) return pandoc.Str(e.text:upper()) end" } });
 const loadMs = performance.now() - t0;
@@ -32,6 +36,12 @@ check("read many", () => pandoc.readMany(["*a*"], {})[0].blocks[0].c[0].t === "E
 check("Lua filter", () => pandoc.convert({ to: "plain", filters: ["/tmp/upper.lua"] }, "hi") === "HI\\n");
 check("JS filter", () => pandoc.convertWithFilters({ to: "plain" }, "hi", [(d) => { d.blocks[0].c[0].c = "yo"; return d; }]) === "yo\\n");
 check("2000 plain words (crashes Node 22)", () => pandoc.convert({ to: "html" }, md(2000, "word", " ")).length === 10007);
+if (wasmFilters) {
+  const { wasmFilter } = await import("/wasm/wasm-filter.mjs");
+  const bytes = await (await fetch("/filters/upper.wasm")).arrayBuffer();
+  const upper = await wasmFilter(bytes, { name: "upper.wasm" });
+  check("wasm filter (Rust)", () => pandoc.convertWithFilters({ to: "plain" }, "hello *world*", [upper]) === "HELLO WORLD\\n");
+}
 let t = performance.now();
 check("800 paragraphs", () => pandoc.convert({ to: "html" }, md(800, "Paragraph with *emphasis* and [a link](u).", "\\n\\n")).length > 0);
 const convertMs = performance.now() - t;
@@ -50,13 +60,14 @@ const server = createServer((req, res) => {
   let file;
   if (url === "/") { res.writeHead(200, { "content-type": "text/html" }); return res.end(page); }
   if (url === "/worker.mjs") { res.writeHead(200, { "content-type": "text/javascript" }); return res.end(worker); }
-  if (url === "/wasm/browser.mjs") {
+  if (url === "/wasm/browser.mjs" || url === "/wasm/wasm-filter.mjs") {
     // the bare import, which a page would resolve with an import map or a bundler
     res.writeHead(200, { "content-type": "text/javascript" });
-    return res.end(readFileSync(join(here, "browser.mjs"), "utf8")
+    return res.end(readFileSync(join(here, url.slice(6)), "utf8")
       .replace('"@bjorn3/browser_wasi_shim"', '"/@bjorn3/browser_wasi_shim/dist/index.js"'));
   }
   if (url === "/libpandoc.wasm") file = wasm;
+  else if (url.startsWith("/filters/") && wasmFilters) file = join(wasmFilters, normalize(url.slice(9)));
   else if (url.startsWith("/wasm/")) file = join(here, normalize(url.slice(6)));
   else if (url.startsWith("/@bjorn3/")) file = join(nm, normalize(url.slice(1)));
   if (!file || !existsSync(file)) { res.writeHead(404); return res.end(); }

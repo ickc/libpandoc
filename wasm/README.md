@@ -46,6 +46,17 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   (real directories preopened), `wasm/browser.mjs` with
   `@bjorn3/browser_wasi_shim` (`/tmp` in memory, or any directories given;
   run it in a Worker).
+- **Wasm filters:** `wasm/wasm-filter.mjs` runs a filter compiled to
+  WebAssembly inside a conversion: a pandoc JSON filter built for WASI
+  (`wasm32-wasip1`), such as a Rust one with panir, reading the document
+  on stdin and writing it to stdout, told the format as its argument and
+  the rest in `PANDOC_*` variables as pandoc tells JSON filters. It is
+  compiled once and instantiated per run, synchronously, with an in-memory
+  stdin and stdout, seeing only the directories given
+  (`browser_wasi_shim`, in the browser and Node alike). The same file runs
+  in pandocrs (libpandoc-rs, wasmtime). Tested in Node
+  (`test-wasm-filter.mjs`) and in browsers (`WASM_FILTERS=... node
+  wasm/test-browser.mjs`: Chromium 153, Firefox 155, WebKit 26.6).
 - **Pyodide:** `wasm/emscripten-fs.mjs` makes WASI directories out of
   Pyodide's filesystem, so that Python and pandoc see the same files:
   `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. libpandoc-python

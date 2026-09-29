@@ -164,13 +164,15 @@ export async function start(module, wasi) {
      *  in `options.filters` as {type: "callback", index: i}; by default,
      *  all of them after the options' own filters. With `raw`, the
      *  functions take and return JSON text (for a library that parses it
-     *  itself, such as panir, or for Python in Pyodide). */
+     *  itself, such as panir, or for Python in Pyodide). A function with
+     *  `bytes` set (wasm-filter.mjs's) takes and returns bytes. */
     convertWithFilters(options, input, fns, { raw = false, bytes = false } = {}) {
       const opts = { ...options };
       if (!opts.filters?.some((f) => f?.type === "callback")) {
         opts.filters = [...(opts.filters ?? []), ...fns.map((_, i) => ({ type: "callback", index: i }))];
       }
-      const wrapped = fns.map((fn) => raw
+      // a function marked `bytes` (a wasm filter) takes and returns bytes
+      const wrapped = fns.map((fn) => fn.bytes ? fn : raw
         ? (doc, ctx) => fn(str(doc), str(ctx))
         : (doc, ctx) => JSON.stringify(fn(JSON.parse(str(doc)), JSON.parse(str(ctx)))));
       const { output } = ok(abi.convertFilters(JSON.stringify(opts), input, wrapped));

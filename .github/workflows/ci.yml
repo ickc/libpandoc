@@ -164,6 +164,18 @@ jobs:
           node --version
           node --test wasm/test.mjs
 
+      # Rust filters compiled to wasm (libpandoc-rs's examples, WASI
+      # commands) inside a conversion, run by the JS engine
+      - name: Test wasm filters in Node
+        run: |
+          source ~/.ghc-wasm/env
+          rustup target add wasm32-wasip1
+          git clone --depth 1 https://github.com/ickc/libpandoc-rs "$RUNNER_TEMP/libpandoc-rs"
+          (cd "$RUNNER_TEMP/libpandoc-rs/filters" && cargo build --release --target wasm32-wasip1)
+          echo "WASM_FILTERS=$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" >> "$GITHUB_ENV"
+          (cd wasm && npm ci)
+          WASM_FILTERS="$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" node --test wasm/test-wasm-filter.mjs
+
       - name: Test in Pyodide
         run: |
           source ~/.ghc-wasm/env
