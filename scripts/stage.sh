@@ -8,6 +8,7 @@
 #                                   libpandoc.so needs; its RPATH points here)
 #   $1/share/libpandoc/api-version.json  (written by the smoke test)
 #   $1/share/libpandoc/examples/smoke.c
+#   $1/lib/pkgconfig/libpandoc.pc  (Linux, macOS; relative to itself)
 #
 # On Linux, the Haskell packages are linked into libpandoc.so itself
 # (scripts/merge-link.sh), except GHC's non-reinstallable libraries (base,
@@ -23,6 +24,23 @@ out=$(cd "$out" && pwd)
 cp include/libpandoc.h "$out/include/"
 cp COPYING.md "$out/"
 cp test/smoke.c "$out/share/libpandoc/examples/"
+
+# pkg-config, relocatable (${pcfiledir}): `pkg-config --cflags --libs libpandoc`
+if [[ "$(uname -s)" == Linux || "$(uname -s)" == Darwin ]]; then
+	mkdir -p "$out/lib/pkgconfig"
+	version=$(awk '/^version:/ {print $2}' libpandoc.cabal)
+	cat >"$out/lib/pkgconfig/libpandoc.pc" <<-EOF
+	prefix=\${pcfiledir}/../..
+	libdir=\${prefix}/lib
+	includedir=\${prefix}/include
+
+	Name: libpandoc
+	Description: pandoc ${PANDOC_VERSION:-} as a C library
+	Version: ${version}
+	Libs: -L\${libdir} -lpandoc
+	Cflags: -I\${includedir}
+	EOF
+fi
 
 case "$(uname -s)" in
 Linux)
