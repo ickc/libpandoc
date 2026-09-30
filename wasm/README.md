@@ -63,6 +63,12 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
   options that read or write files, fetch resources or run programs (the
   list every host shares, in `LibPandoc.Untrusted`).
+  `{ maxMemory }` (bytes; in Node, by default `$LIBPANDOC_WASM_MAX_MEMORY`,
+  as the other hosts) caps a filter's memory: its module's own maximum is
+  lowered before it is compiled. There is no timeout, as the other hosts
+  have: a filter runs synchronously on the conversion's thread, which
+  nothing can interrupt. For one, run the conversion in a Worker and
+  terminate it.
 - **Pyodide:** `wasm/emscripten-fs.mjs` makes WASI directories out of
   Pyodide's filesystem, so that Python and pandoc see the same files:
   `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. libpandoc-python

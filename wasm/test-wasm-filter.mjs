@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { File, PreopenDirectory } from "@bjorn3/browser_wasi_shim";
 import { load, PandocError } from "./node.mjs";
-import { wasmFilter } from "./wasm-filter.mjs";
+import { parseMemory, wasmFilter } from "./wasm-filter.mjs";
 
 const path = process.env.LIBPANDOC_WASM ?? new URL("../dist/wasm/libpandoc.wasm", import.meta.url).pathname;
 const dir = process.env.WASM_FILTERS;
@@ -119,4 +119,18 @@ test("a filter's calls are sandboxed (LaTeX's \\input reads no file)", async () 
     { convert: [{ from: "latex", to: "plain" }, tex] },
   ]);
   for (const a of answers) assert.doesNotMatch(JSON.stringify(a), /SECRET/);
+});
+
+test("a memory limit: its memory can't grow past it", async () => {
+  const hog = await filter("misbehave", { maxMemory: 64 << 20, stderr: () => {} });
+  assert.throws(() => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "```hog\n```\n", [hog]),
+                (e) => e instanceof PandocError && /memory limit: 67108864 bytes/.test(e.message));
+  assert.ok(hog.memory <= 64 << 20, `${hog.memory}`);
+  // within it, as without
+  const upper = await filter("upper", { maxMemory: 64 << 20 });
+  assert.equal(pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "hi", [upper]), "HI\n");
+  await assert.rejects(filter("upper", { maxMemory: 1 }), /over its limit/);
+  assert.equal(parseMemory("64m"), 64 << 20);
+  assert.equal(parseMemory(""), null);
+  assert.throws(() => parseMemory("12x"));
 });

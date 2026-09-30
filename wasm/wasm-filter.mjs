@@ -21,6 +21,13 @@
 // browser.mjs), its `libpandoc` imports are this libpandoc.wasm's calls,
 // marked untrusted (below), so that libpandoc allows them only pandoc's
 // sandbox and no options that read or write files or run programs.
+//
+// Limits: `maxMemory` (bytes; in Node, by default $LIBPANDOC_WASM_MAX_MEMORY,
+// bytes or with k, m or g, as the other hosts) caps the filter's memory: the
+// module's own maximum is lowered to it before it is compiled, so its memory
+// can't grow further. There is no timeout here, as the other hosts have: a
+// filter runs synchronously on the conversion's thread, which nothing can
+// interrupt; run the conversion in a Worker and terminate it for one.
 
 import { ConsoleStdout, File, OpenFile, WASI } from "@bjorn3/browser_wasi_shim";
 
@@ -28,6 +35,75 @@ const fromUtf8 = new TextDecoder("utf-8");
 const toUtf8 = new TextEncoder();
 
 class Refused extends Error {}
+
+const PAGE = 65536;
+
+/** A size in bytes, or with k, m or g ($LIBPANDOC_WASM_MAX_MEMORY): null if
+ *  empty or 0. */
+export function parseMemory(s) {
+  s = (s ?? "").trim();
+  if (!s) return null;
+  const m = /^([0-9]+)([kKmMgG]?)$/.exec(s);
+  if (!m) throw new Error(`LIBPANDOC_WASM_MAX_MEMORY: bytes, or with k, m or g, not ${JSON.stringify(s)}`);
+  const n = Number(m[1]) * 2 ** { "": 0, k: 10, m: 20, g: 30 }[m[2].toLowerCase()];
+  return n || null;
+}
+
+const leb = (b, p) => {
+  let n = 0, shift = 0, byte;
+  do {
+    byte = b[p++];
+    n += (byte & 0x7f) * 2 ** shift;
+    shift += 7;
+  } while (byte & 0x80);
+  return [n, p];
+};
+const uleb = (n) => {
+  const out = [];
+  do {
+    let byte = n % 128;
+    n = Math.floor(n / 128);
+    if (n) byte |= 0x80;
+    out.push(byte);
+  } while (n);
+  return out;
+};
+
+/** The module `bytes` with its memory's maximum at most `max` bytes. */
+export function withMaxMemory(bytes, max, name = "filter.wasm") {
+  const b = new Uint8Array(bytes.buffer ?? bytes, bytes.byteOffset ?? 0, bytes.byteLength);
+  const pages = Math.floor(max / PAGE);
+  const out = [b.subarray(0, 8)];
+  let found = false;
+  for (let p = 8; p < b.length;) {
+    const id = b[p];
+    const [size, start] = leb(b, p + 1);
+    const end = start + size;
+    if (id === 5) {
+      let [count, q] = leb(b, start);
+      const body = [...uleb(count)];
+      for (let i = 0; i < count; i++) {
+        const flags = b[q++];
+        if (flags & ~1) throw new Error(`${name}: can't limit a shared or 64-bit memory`);
+        let min, own = null;
+        [min, q] = leb(b, q);
+        if (flags & 1) [own, q] = leb(b, q);
+        if (min > pages) throw new Error(`${name} needs ${min * PAGE} bytes of memory to start, over its limit of ${max}`);
+        body.push(1, ...uleb(min), ...uleb(own === null ? pages : Math.min(own, pages)));
+      }
+      out.push(Uint8Array.of(5, ...uleb(body.length), ...body));
+      found = true;
+    } else {
+      out.push(b.subarray(p, end));
+    }
+    p = end;
+  }
+  if (!found) throw new Error(`${name}: no memory of its own to limit`);
+  const all = new Uint8Array(out.reduce((n, a) => n + a.length, 0));
+  let at = 0;
+  for (const a of out) { all.set(a, at); at += a.length; }
+  return all;
+}
 
 /** What a filter gives pandoc (`options` or a query), marked for libpandoc
  *  to check (`"untrusted": true`, libpandoc 1.7): it accepts only what reads
@@ -89,7 +165,9 @@ function libpandocImports(abi, memory) {
 }
 
 /** A filter from a wasm module (its bytes, or a compiled
- *  WebAssembly.Module). `name` is its first argument (argv[0]);
+ *  WebAssembly.Module, which can't be given a `maxMemory`). `name` is its
+ *  first argument (argv[0]); `maxMemory`: the most memory it may have, in
+ *  bytes (null: none; by default, in Node, $LIBPANDOC_WASM_MAX_MEMORY);
  *  `preopens`: directories it may see (browser_wasi_shim
  *  PreopenDirectory); `pandocVersion`: for PANDOC_VERSION (by default,
  *  `pandoc`'s); `pandoc`: the libpandoc.wasm (core.mjs's) the filter's
@@ -98,7 +176,11 @@ function libpandocImports(abi, memory) {
  *  takes. */
 export async function wasmFilter(source, { name = "filter.wasm", preopens = [], pandoc = null,
   pandocVersion = pandoc?.query({ query: "version" }) ?? null,
-  stderr = (line) => console.warn(`[${name}] ${line}`) } = {}) {
+  stderr = (line) => console.warn(`[${name}] ${line}`),
+  maxMemory = parseMemory(globalThis.process?.env?.LIBPANDOC_WASM_MAX_MEMORY) } = {}) {
+  if (maxMemory != null && source instanceof WebAssembly.Module)
+    throw new Error(`${name}: maxMemory needs the module's bytes, not a compiled module`);
+  if (maxMemory != null) source = withMaxMemory(source, maxMemory, name);
   const module = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source);
   const callsPandoc = WebAssembly.Module.imports(module).some((i) => i.module === "libpandoc");
   if (callsPandoc && !pandoc) throw new Error(`${name} calls pandoc: give wasmFilter the pandoc it calls`);
@@ -121,9 +203,18 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
     let instance;
     if (callsPandoc) imports.libpandoc = libpandocImports(pandoc.abi, () => instance.exports.memory);
     instance = new WebAssembly.Instance(module, imports);
-    const status = wasi.start(instance);
+    let status;
+    try {
+      status = wasi.start(instance);
+    } catch (e) {
+      if (maxMemory == null || !(e instanceof WebAssembly.RuntimeError)) throw e;
+      throw new Error(`${name}: ${e.message} (its memory limit: ${maxMemory} bytes, LIBPANDOC_WASM_MAX_MEMORY)`);
+    }
     run.memory = Math.max(run.memory, instance.exports.memory.buffer.byteLength);
-    if (status !== 0) throw new Error(`${name} exited with status ${status}`);
+    if (status !== 0) {
+      const limit = maxMemory == null ? "" : ` (its memory limit: ${maxMemory} bytes, LIBPANDOC_WASM_MAX_MEMORY)`;
+      throw new Error(`${name} exited with status ${status}${limit}`);
+    }
     return stdout.data;
   }
   run.bytes = true;
