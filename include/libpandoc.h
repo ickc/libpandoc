@@ -224,7 +224,7 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
 LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t request_len);
 
 /* Ask pandoc for information. query is a JSON object with a "query" key:
- *   {"query": "version"}                  pandoc version, e.g. "3.11"
+ *   {"query": "version"}                  pandoc version, e.g. "3.12"
  *   {"query": "api-version"}              pandoc-types API version, [1,23,1]
  *   {"query": "input-formats"}            list of reader names
  *   {"query": "output-formats"}           list of writer names

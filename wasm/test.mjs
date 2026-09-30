@@ -21,7 +21,7 @@ test("errors have a kind", () => {
 });
 
 test("query", () => {
-  assert.equal(pandoc.query({ query: "version" }), "3.11");
+  assert.equal(pandoc.query({ query: "version" }), "3.12");
   assert.ok(pandoc.query({ query: "input-formats" }).includes("docx"));
   assert.match(pandoc.query({ query: "default-template", format: "html" }), /<!DOCTYPE html>/);
 });

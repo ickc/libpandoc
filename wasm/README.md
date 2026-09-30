@@ -4,7 +4,7 @@ libpandoc's C ABI (`include/libpandoc.h`) built by GHC's wasm backend as a
 WASI reactor, for JavaScript hosts (browser, Node.js) and Python in Pyodide.
 It uses the same pandoc entry points as upstream's `pandoc.wasm` and the
 same build recipe (`cabal-wasm.project`, the patches in `wasm/patches`, from
-pandoc 3.11's `cabal.project`).
+pandoc 3.12's `cabal.project`).
 
 ```sh
 scripts/build-wasm.sh              # dist/wasm/libpandoc.wasm (needs ~/.ghc-wasm)

@@ -5,10 +5,10 @@ packages: .
 
 -- From pandoc's own cabal.project (native part), so that the dependency
 -- plan matches the pandoc binary's.
-constraints: skylighting-format-blaze-html >= 0.1.2.1,
+constraints: skylighting-format-blaze-html >= 0.1.2.2,
              skylighting-format-context >= 0.1.0.2,
              auto-update >= 0.2.6,
-             crypton >= 1.1.1
+             crypton >= 2.0.1
 
 package pandoc
   flags: +embed_data_files +http

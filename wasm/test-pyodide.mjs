@@ -38,7 +38,7 @@ import panir
 from panir import Filter, Header, Str
 
 assert lp.convert(json.dumps({"from": "markdown", "to": "html"}), "*hi*") == "<p><em>hi</em></p>\\n"
-assert json.loads(lp.query(json.dumps({"query": "version"}))) == "3.11"
+assert json.loads(lp.query(json.dumps({"query": "version"}))) == "3.12"
 
 # read: markdown to a panir document
 doc = panir.loads(lp.convert(json.dumps({"to": "json"}), "# Title\\n\\nhello *world*"))

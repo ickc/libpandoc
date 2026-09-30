@@ -31,7 +31,7 @@ const pandoc = await load("/libpandoc.wasm", { files: { "/tmp/upper.lua": "funct
 const loadMs = performance.now() - t0;
 check("convert", () => pandoc.convert({ from: "markdown", to: "html" }, "# Hi\\n\\n*a*") === '<h1 id="hi">Hi</h1>\\n<p><em>a</em></p>\\n');
 check("error kind", () => { try { pandoc.convert({ from: "nonsense" }, "x"); return "no error"; } catch (e) { return e.kind === "PandocUnknownReaderError" || e.kind; } });
-check("query", () => pandoc.query({ query: "version" }) === "3.11");
+check("query", () => pandoc.query({ query: "version" }) === "3.12");
 check("read many", () => pandoc.readMany(["*a*"], {})[0].blocks[0].c[0].t === "Emph");
 check("Lua filter", () => pandoc.convert({ to: "plain", filters: ["/tmp/upper.lua"] }, "hi") === "HI\\n");
 check("JS filter", () => pandoc.convertWithFilters({ to: "plain" }, "hi", [(d) => { d.blocks[0].c[0].c = "yo"; return d; }]) === "yo\\n");

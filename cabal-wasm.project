@@ -1,13 +1,13 @@
 -- libpandoc.wasm (scripts/build-wasm.sh): the wasm32 part of pandoc's own
--- cabal.project (pandoc 3.11), whose pandoc.wasm build this follows, with
+-- cabal.project (pandoc 3.12), whose pandoc.wasm build this follows, with
 -- its patches in wasm/patches. Build with --builddir=dist-wasm, so that the
 -- patches' relative paths resolve.
 packages: .
 
-constraints: skylighting-format-blaze-html >= 0.1.2.1,
+constraints: skylighting-format-blaze-html >= 0.1.2.2,
              skylighting-format-context >= 0.1.0.2,
              auto-update >= 0.2.6,
-             crypton >= 1.1.1
+             crypton >= 2.0.1
 
 allow-newer: hslua-module-zip:zip-archive,gridtables:doclayout,djot:doclayout,hslua-module-doclayout:doclayout
 
