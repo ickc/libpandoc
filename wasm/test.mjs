@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { load, PandocError } from "./node.mjs";
+import { load, PandocError, StoppedError } from "./node.mjs";
 
 const path = process.env.LIBPANDOC_WASM ?? new URL("../dist/wasm/libpandoc.wasm", import.meta.url).pathname;
 const t0 = performance.now();
@@ -103,4 +103,12 @@ test("untrusted: only options that read, write, fetch and run nothing, sandboxed
   const tex = "\\input{/tmp/untrusted-secret.tex}";
   assert.match(pandoc.convert({ from: "latex", to: "plain" }, tex), /SECRET/);
   assert.doesNotMatch(pandoc.convert({ from: "latex", to: "plain", untrusted: true }, tex), /SECRET/);
+});
+
+test("another instance from this one's compiled module; StoppedError exported", async () => {
+  const again = await load(pandoc.module);
+  assert.equal(again.convert({ to: "html" }, "*x*"), "<p><em>x</em></p>\n");
+  assert.equal(pandoc.convert({ to: "html" }, "*y*"), "<p><em>y</em></p>\n");
+  assert.ok(new StoppedError("x") instanceof Error);
+  assert.equal(new StoppedError("x").name, "StoppedError");
 });

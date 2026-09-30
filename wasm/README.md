@@ -49,9 +49,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
 - **Memory:** wasm32 has 4 GiB of linear memory at most. The runtime has
   a heap limit (`-M3584m`), with which GHC compacts instead of copying its
   oldest generation: about 80 MB of markdown still converts (to HTML, in
-  5 minutes). Past that, the runtime runs out of memory and exits the
-  instance; `core.mjs` then throws an `Error` saying so, as it does on
-  every later call: load the module again.
+  5 minutes). Past that, the instance stops: see "When an instance stops"
+  below.
 - **Wasm filters:** `wasm/wasm-filter.mjs` runs a filter compiled to
   WebAssembly inside a conversion: a pandoc JSON filter built for WASI
   (`wasm32-wasip1`), such as a Rust one with panir, reading the document
@@ -91,3 +90,68 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   panir Python (Pyodide), in one conversion, in browsers. On pandoc's
   MANUAL (299 KB, markdown to HTML, about 1 s), a Python filter adds 10–20%,
   a JS one 3–10%; Pyodide costs 1 s to start and 6.3 MB to download.
+
+## When an instance stops
+
+An instance of libpandoc.wasm (what one `load()` returns) can stop for
+good in the middle of a call. What happens:
+
+- **When:** GHC's runtime runs out of memory (wasm32 has 4 GiB; about
+  80 MB of markdown still converts, a bigger document won't), or the module
+  traps (a `WebAssembly.RuntimeError`, such as a stack overflow). Normal
+  failures are not this: a document pandoc can't read, a bad option, a JS
+  or wasm filter that throws or traps all come back as a `PandocError`, and
+  the instance goes on.
+- **Why for good:** out of memory, the runtime calls `exit` (WASI's
+  `proc_exit`), which the host throws as an exception through the running
+  conversion. The runtime is left with its heap full and a conversion half
+  done, and isn't meant to run again (tried: the next call fails the same
+  way). A wasm memory can't shrink either.
+- **What you see:** a `StoppedError` (exported by `node.mjs` and
+  `browser.mjs`, next to `PandocError`), whose message says why and whose
+  `cause` is what the host threw. **Every later call on the same instance
+  throws a `StoppedError` too**, at once, without entering wasm. Other
+  instances are unaffected.
+- **What to do:** drop the instance and `load()` a new one, from the old
+  one's `module` (its compiled `WebAssembly.Module`; `load` takes one as
+  well as a path, URL or bytes): 40–60 ms in Node, against 120–140 ms from
+  the file, and in a browser no second download. The new instance starts
+  a fresh runtime, and the old one's memory is freed once nothing refers
+  to it. There's no automatic reload or retry: the same input will most
+  likely stop the new instance too, and what the old one held (its `/tmp`)
+  is gone, so the application decides.
+
+```js
+import { load, StoppedError } from "./node.mjs"; // or browser.mjs
+
+let pandoc = load(wasmPath); // an instance, as a promise
+
+async function convert(options, input) {
+  const instance = await pandoc;
+  try {
+    return instance.convert(options, input);
+  } catch (e) {
+    if (e instanceof StoppedError) {
+      // this instance is gone: a fresh one (no recompiling) for later calls
+      pandoc = load(instance.module);
+      // and this input most likely can't be converted here: say so, don't retry
+      throw new Error("the document is too large to convert here", { cause: e });
+    }
+    throw e; // a PandocError: about this document; the instance is fine
+  }
+}
+```
+
+In a browser, run conversions in a Worker (worth it anyway: a conversion
+can take seconds, and would block the page). Then a stopped instance, or
+a conversion running too long, can also be ended from outside with
+`worker.terminate()`, and a new Worker started.
+
+- **Pyodide** (libpandoc-python's prototype backend): the call raises
+  Pyodide's `JsException` with `e.name == "StoppedError"`. The package
+  holds the instance the host registered (`libpandoc_wasm`), so recovering
+  means loading and registering a new one and importing the package again;
+  for now, restart Pyodide.
+- **Native libpandoc** has none of this: no 4 GiB ceiling, and memory
+  exhaustion there is the operating system's to handle.
+

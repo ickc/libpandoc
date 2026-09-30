@@ -14,9 +14,12 @@ import { join } from "node:path";
 import { WASI } from "node:wasi";
 import { start } from "./core.mjs";
 
-export { PandocError } from "./core.mjs";
+export { PandocError, StoppedError } from "./core.mjs";
 
-export async function load(path, { preopens } = {}) {
+/** `source`: the module's path, or a compiled WebAssembly.Module (a
+ *  previous instance's `module`: loading again from it skips compiling).
+ *  `preopens`: more directories, as node:wasi's. */
+export async function load(source, { preopens } = {}) {
   const tmp = mkdtempSync(join(tmpdir(), "libpandoc-wasm-"));
   const wasi = new WASI({
     version: "preview1",
@@ -25,10 +28,12 @@ export async function load(path, { preopens } = {}) {
     preopens: { "/tmp": tmp, ...preopens },
     returnOnExit: true,
   });
-  const module = await WebAssembly.compile(await readFile(path));
+  const module = source instanceof WebAssembly.Module
+    ? source
+    : await WebAssembly.compile(await readFile(source));
   const pandoc = await start(module, {
     imports: wasi.getImportObject(),
     initialize: (instance) => wasi.initialize(instance),
   });
-  return { ...pandoc, tmp };
+  return { ...pandoc, tmp, module };
 }

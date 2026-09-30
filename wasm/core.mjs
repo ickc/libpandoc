@@ -18,6 +18,19 @@ export class PandocError extends Error {
   }
 }
 
+/** This instance of libpandoc.wasm has stopped and can't be used again:
+ *  its Haskell runtime exited (out of memory: wasm32 has 4 GiB) or the
+ *  module trapped, in the middle of a call. Every later call on it throws
+ *  this too, without entering wasm. `load()` a new instance (which also
+ *  frees the memory, once nothing refers to the old one). See README.md,
+ *  "When an instance stops". */
+export class StoppedError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "StoppedError";
+  }
+}
+
 /** The library over an instance of libpandoc.wasm: `module` is the
  *  compiled module, `wasi` the host's WASI: its import object and how it
  *  starts a reactor. */
@@ -123,11 +136,11 @@ export async function start(module, wasi) {
 
   // The Haskell runtime exiting (out of memory: WASI's proc_exit, which
   // node:wasi throws as a symbol, browser_wasi_shim as a WASIProcExit) or
-  // trapping leaves the instance unusable: say so as an Error, now and on
-  // every later call, rather than throwing a bare value.
+  // trapping leaves the instance unusable: say so as a StoppedError, now
+  // and on every later call, rather than throwing a bare value.
   let stopped = null;
   const guard = (f) => (...args) => {
-    if (stopped) throw new Error(stopped);
+    if (stopped) throw new StoppedError(stopped);
     try {
       return f(...args);
     } catch (e) {
@@ -135,7 +148,7 @@ export async function start(module, wasi) {
       if (!exited && !(e instanceof WebAssembly.RuntimeError)) throw e;
       stopped = `libpandoc.wasm stopped (${exited ? "its runtime exited" : e.message}), ` +
         "most likely out of memory (wasm32's 4 GiB): load it again";
-      throw new Error(stopped, { cause: e });
+      throw new StoppedError(stopped, { cause: e });
     }
   };
 

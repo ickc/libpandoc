@@ -126,6 +126,8 @@ test("a memory limit: its memory can't grow past it", async () => {
   assert.throws(() => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "```hog\n```\n", [hog]),
                 (e) => e instanceof PandocError && /memory limit: 67108864 bytes/.test(e.message));
   assert.ok(hog.memory <= 64 << 20, `${hog.memory}`);
+  // the filter failed, not libpandoc.wasm: the instance goes on
+  assert.equal(pandoc.convert({ from: "markdown", to: "plain" }, "*still here*"), "still here\n");
   // within it, as without
   const upper = await filter("upper", { maxMemory: 64 << 20 });
   assert.equal(pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "hi", [upper]), "HI\n");
