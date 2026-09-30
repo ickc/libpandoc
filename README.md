@@ -41,7 +41,7 @@ it at run time. On a 16-core, 32-thread CPU, 16 threads were as fast as 32
 or faster: set it to the number of physical cores for throughput.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.4 now; the embedded pandoc's version and its
+are this C interface's own, 1.7 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 
@@ -52,6 +52,23 @@ side uses only what upstream's own `pandoc.wasm` uses (`Opt`'s JSON
 decoder, `defaultOpts`, `convertWithOpts`, the Lua engine), plus
 `parseOptionsFromArgs`, so upstream keeps it working. Callback filters add
 one more public interface: the Lua engine's `engineApplyFilter`.
+
+### Untrusted input
+
+`"untrusted": true` (libpandoc's key, not pandoc's) in `pandoc_convert`'s
+options, `pandoc_read_many`'s `"options"` or a `pandoc_query` is for
+options or documents from someone you don't trust. libpandoc then accepts
+only options that read no files, write none, fetch nothing and run
+nothing (the reading ones, and those that only shape the output: `to`,
+`standalone`, `toc`, `variables`, ...), formats by name (no Lua readers or
+writers, no `pdf`), input given rather than files, and pandoc's sandbox
+on. Anything else fails with a `PandocOptionError` naming it: filters,
+templates, `citeproc`, output files, `data-dir`, ... So only pandoc's own
+code runs, and it reads nothing but the input. Stricter than pandoc's
+`sandbox` alone, which leaves citeproc reading the bibliography, CSL and
+abbreviations files a document's own metadata names (`UPSTREAM.md` in the
+project). Wasm filters' calls to pandoc are always untrusted. The list is
+`src/LibPandoc/Untrusted.hs`.
 
 ### Filters in the caller's language
 

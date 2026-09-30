@@ -46,6 +46,12 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   (real directories preopened), `wasm/browser.mjs` with
   `@bjorn3/browser_wasi_shim` (`/tmp` in memory, or any directories given;
   run it in a Worker).
+- **Memory:** wasm32 has 4 GiB of linear memory at most. The runtime has
+  a heap limit (`-M3584m`), with which GHC compacts instead of copying its
+  oldest generation: about 80 MB of markdown still converts (to HTML, in
+  5 minutes). Past that, the runtime runs out of memory and exits the
+  instance; `core.mjs` then throws an `Error` saying so, as it does on
+  every later call: load the module again.
 - **Wasm filters:** `wasm/wasm-filter.mjs` runs a filter compiled to
   WebAssembly inside a conversion: a pandoc JSON filter built for WASI
   (`wasm32-wasip1`), such as a Rust one with panir, reading the document
@@ -63,6 +69,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
   options that read or write files, fetch resources or run programs (the
   list every host shares, in `LibPandoc.Untrusted`).
+  The same `"untrusted": true` works in `convert`'s options for untrusted
+  documents or options in general.
   `{ maxMemory }` (bytes; in Node, by default `$LIBPANDOC_WASM_MAX_MEMORY`,
   as the other hosts) caps a filter's memory: its module's own maximum is
   lowered before it is compiled. There is no timeout, as the other hosts

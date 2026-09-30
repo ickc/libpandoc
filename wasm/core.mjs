@@ -121,6 +121,24 @@ export async function start(module, wasi) {
     }
   }
 
+  // The Haskell runtime exiting (out of memory: WASI's proc_exit, which
+  // node:wasi throws as a symbol, browser_wasi_shim as a WASIProcExit) or
+  // trapping leaves the instance unusable: say so as an Error, now and on
+  // every later call, rather than throwing a bare value.
+  let stopped = null;
+  const guard = (f) => (...args) => {
+    if (stopped) throw new Error(stopped);
+    try {
+      return f(...args);
+    } catch (e) {
+      const exited = typeof e === "symbol" || e?.constructor?.name === "WASIProcExit";
+      if (!exited && !(e instanceof WebAssembly.RuntimeError)) throw e;
+      stopped = `libpandoc.wasm stopped (${exited ? "its runtime exited" : e.message}), ` +
+        "most likely out of memory (wasm32's 4 GiB): load it again";
+      throw new Error(stopped, { cause: e });
+    }
+  };
+
   const abi = {
     abiVersion: () => ex.pandoc_abi_version(),
     convert: (options, input) =>
@@ -140,6 +158,7 @@ export async function start(module, wasi) {
     readMany: (request) => withAlloc([request], ([p, n]) => take(ex.pandoc_read_many(p, n))),
     query: (q) => withAlloc([q], ([p, n]) => take(ex.pandoc_query(p, n))),
   };
+  for (const k of Object.keys(abi)) abi[k] = guard(abi[k]);
 
   // the output, or the error thrown
   function ok([status, output, kind, message, log]) {

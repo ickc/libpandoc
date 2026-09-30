@@ -87,8 +87,15 @@ static void start_runtime(void)
     RtsConfig conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
 #ifdef __wasm__
-    /* the non-threaded runtime: no -N or -q; -H64m as upstream's pandoc.js */
-    conf.rts_opts = "-A8m -H64m";
+    /* the non-threaded runtime: no -N or -q; -H64m as upstream's pandoc.js.
+     * -M3584m, a heap limit under wasm32's 4 GiB: with it GHC compacts the
+     * oldest generation when it grows large instead of copying it, which
+     * needs much less memory. Without it, 79 MB of markdown stalled at the
+     * 4 GiB ceiling (88 minutes at 100% CPU, no progress); with it, that
+     * converts in 5 minutes, and 59 MB in 193 s instead of 266 (3.0 GiB
+     * instead of 3.6). Bigger still (118 MB), the runtime runs out of
+     * memory and exits the instance (the host reports it: core.mjs). */
+    conf.rts_opts = "-A8m -H64m -M3584m";
 #else
     conf.rts_opts = "-A8m -N1 -qi1 --install-signal-handlers=no"
 #ifdef _WIN32

@@ -91,3 +91,16 @@ test("timing", () => {
   pandoc.convertWithFilters({ from: "markdown", to: "html" }, md, [(d) => d]);
   console.log(`# 800 paragraphs md->html: ${convert.toFixed(0)} ms; with an identity JS filter: ${(performance.now() - t).toFixed(0)} ms`);
 });
+
+test("untrusted: only options that read, write, fetch and run nothing, sandboxed", () => {
+  assert.equal(pandoc.convert({ to: "html", untrusted: true }, "*hi*"), "<p><em>hi</em></p>\n");
+  for (const extra of [{ citeproc: true }, { filters: ["x.lua"] }, { "output-file": "/tmp/o" },
+                       { to: "pdf" }, { "data-dir": "/tmp" }]) {
+    assert.throws(() => pandoc.convert({ to: "html", untrusted: true, ...extra }, "x"),
+                  (e) => e instanceof PandocError && /not allowed for untrusted code/.test(e.message));
+  }
+  writeFileSync(join(pandoc.tmp, "untrusted-secret.tex"), "SECRET");
+  const tex = "\\input{/tmp/untrusted-secret.tex}";
+  assert.match(pandoc.convert({ from: "latex", to: "plain" }, tex), /SECRET/);
+  assert.doesNotMatch(pandoc.convert({ from: "latex", to: "plain", untrusted: true }, tex), /SECRET/);
+});
