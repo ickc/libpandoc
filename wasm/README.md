@@ -59,10 +59,10 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   wasm/test-browser.mjs`: Chromium 153, Firefox 155, WebKit 26.6).
   A filter may call pandoc (libpandoc-rs's `libpandoc::read_many` and the
   like, built for wasm, import them from a `libpandoc` module): given
-  `{ pandoc }`, those calls go to this libpandoc.wasm, sandboxed as
-  pandocrs does it (`allowed`: pandoc's sandbox, and no options that read
-  or write files, fetch resources or run programs; `read_many` needs
-  libpandoc 1.6).
+  `{ pandoc }`, those calls go to this libpandoc.wasm, marked
+  `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
+  options that read or write files, fetch resources or run programs (the
+  list every host shares, in `LibPandoc.Untrusted`).
 - **Pyodide:** `wasm/emscripten-fs.mjs` makes WASI directories out of
   Pyodide's filesystem, so that Python and pandoc see the same files:
   `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. libpandoc-python

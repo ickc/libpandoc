@@ -321,6 +321,68 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
     }
 
+    /* "untrusted": only what reads, writes and runs nothing, sandboxed */
+    {
+        const char *ok = "{\"untrusted\": true, \"from\": \"commonmark_x+smart\", \"to\": \"html\", \"toc\": true}";
+        r = pandoc_convert(ok, strlen(ok), "*a*", 3);
+        check(r && r->status == 0 && strstr(r->output, "<em>a</em>"), "untrusted: convert");
+        pandoc_result_free(r);
+        const char *refused[] = {
+            "{\"untrusted\": true, \"to\": \"html\", \"output-file\": \"x.html\"}",
+            "{\"untrusted\": true, \"to\": \"html\", \"filters\": [\"f.lua\"]}",
+            "{\"untrusted\": true, \"to\": \"reader.lua\"}",
+            "{\"untrusted\": true, \"to\": \"pdf\"}",
+            "{\"untrusted\": \"yes\", \"to\": \"html\"}",
+        };
+        for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
+            r = pandoc_convert(refused[i], strlen(refused[i]), "a", 1);
+            check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
+                  refused[i]);
+            pandoc_result_free(r);
+        }
+        r = pandoc_convert(ok, strlen(ok), NULL, 0);
+        check(r && r->status != 0, "untrusted: convert needs its input");
+        pandoc_result_free(r);
+        const char *no = "{\"untrusted\": false, \"to\": \"html\"}";
+        r = pandoc_convert(no, strlen(no), "a", 1);
+        check(r && r->status == 0, "untrusted: false is as without it");
+        pandoc_result_free(r);
+        /* sandboxed: LaTeX's \input reads the file only when trusted */
+        FILE *tex = fopen("smoke-secret.tex", "wb");
+        if (tex) { fputs("secret", tex); fclose(tex); }
+        const char *rt = "{\"options\": {\"from\": \"latex\"}, \"inputs\": [\"\\\\input{smoke-secret}\"]}";
+        r = pandoc_read_many(rt, strlen(rt));
+        check(r && r->status == 0 && strstr(r->output, "secret"), "read_many: \\input, trusted");
+        pandoc_result_free(r);
+        const char *rq = "{\"options\": {\"untrusted\": true, \"from\": \"latex\"}, \"inputs\": [\"\\\\input{smoke-secret}\"]}";
+        r = pandoc_read_many(rq, strlen(rq));
+        check(r && r->status == 0 && !strstr(r->output, "secret"), "untrusted: read_many sandboxed");
+        pandoc_result_free(r);
+        const char *ct = "{\"untrusted\": true, \"from\": \"latex\", \"to\": \"plain\"}";
+        const char *cin = "\\input{smoke-secret}";
+        r = pandoc_convert(ct, strlen(ct), cin, strlen(cin));
+        check(r && !(r->status == 0 && strstr(r->output, "secret")), "untrusted: convert sandboxed");
+        pandoc_result_free(r);
+        remove("smoke-secret.tex");
+        const char *rd = "{\"options\": {\"untrusted\": true, \"data-dir\": \".\"}, \"inputs\": [\"a\"]}";
+        r = pandoc_read_many(rd, strlen(rd));
+        check(r && r->status != 0 && strstr(r->error_message, "data-dir"), "untrusted: read_many refuses data-dir");
+        pandoc_result_free(r);
+        const char *rw = "{\"options\": {\"untrusted\": true, \"to\": \"html\"}, \"inputs\": [\"a\"]}";
+        r = pandoc_read_many(rw, strlen(rw));
+        check(r && r->status != 0, "untrusted: read_many takes only reading options");
+        pandoc_result_free(r);
+        const char *qv = "{\"query\": \"version\", \"untrusted\": true}";
+        r = pandoc_query(qv, strlen(qv));
+        check(r && r->status == 0, "untrusted: query version");
+        pandoc_result_free(r);
+        const char *qt = "{\"query\": \"default-template\", \"format\": \"html\", \"untrusted\": true}";
+        r = pandoc_query(qt, strlen(qt));
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
+              "untrusted: query default-template refused");
+        pandoc_result_free(r);
+    }
+
     /* smoke API.json: also save the pandoc API version, e.g. [1,23,1,2] */
     if (argc > 1) {
         const char *aq = "{\"query\": \"api-version\"}";

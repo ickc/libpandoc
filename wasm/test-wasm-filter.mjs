@@ -102,7 +102,7 @@ test("a filter's calls get no files, programs or Lua", async () => {
   for (const a of answers) {
     assert.equal(a.error?.[0], "PandocOptionError", JSON.stringify(a));
   }
-  assert.match(answers[0].error[1], /not allowed in a wasm filter: filters/);
+  assert.match(answers[0].error[1], /not allowed for untrusted code: filters/);
 });
 
 test("a filter calling pandoc needs the pandoc", async () => {

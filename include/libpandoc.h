@@ -41,10 +41,11 @@ extern "C" {
  * something below changes incompatibly; MINOR when something is added
  * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
  * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
- * pandoc_read_many's "sandbox"). The pandoc inside has its own version, and
- * so does its document AST: pandoc_query "version" and "api-version". */
+ * pandoc_read_many's "sandbox"; 1.7: "untrusted"). The pandoc inside has
+ * its own version, and so does its document AST: pandoc_query "version"
+ * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 6
+#define LIBPANDOC_ABI_VERSION_MINOR 7
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -97,7 +98,18 @@ LIBPANDOC_API int pandoc_abi_version(void);
  *
  * Output goes to result->output unless the options set output-file. Captured
  * output has LF line endings unless the options set "eol"; files get
- * pandoc's default (native), as with the CLI. */
+ * pandoc's default (native), as with the CLI.
+ *
+ * "untrusted": true (not a pandoc option, libpandoc's) is for options from
+ * code the host doesn't trust, such as a wasm filter calling pandoc: only
+ * options that read no files, write none, fetch nothing and run no
+ * programs are accepted (the reading ones, as pandoc_read_many's below,
+ * and those that only shape the output, such as "to", "standalone",
+ * "toc", "html-math-method", "variables"), formats are names (not Lua
+ * readers or writers, and not "pdf"), input must be given, and "sandbox"
+ * is on. Anything else fails with a PandocOptionError naming it. A host
+ * sets "untrusted": true on whatever such code passes (replacing its own
+ * "untrusted"), and the list lives here, the same for every host. */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 
@@ -201,7 +213,9 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * default-image-extension, track-changes, strip-comments, abbreviations,
  * data-dir, resource-path, sandbox). With "sandbox": true, as pandoc's
  * --sandbox, readers read no files (LaTeX's \input, RST's include, ...):
- * for untrusted texts. Each text is prepared as pandoc prepares its
+ * for untrusted texts. "untrusted": true, as for pandoc_convert, accepts only
+ * the reading options that read no files (not data-dir, resource-path,
+ * abbreviations), for untrusted code. Each text is prepared as pandoc prepares its
  * input (tabs expanded unless preserve-tabs, carriage returns dropped).
  *
  * result->output: a JSON array with, for each input, its document as
@@ -229,7 +243,9 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         or {"subcommand": "lua"} (or
  *                                         "server"), whose arguments aren't
  *                                         pandoc's options
- * The answer is JSON, in result->output. */
+ * The answer is JSON, in result->output. With "untrusted": true, as for
+ * pandoc_convert, only those that read nothing of the user's: not
+ * default-template nor parse-args. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 
 LIBPANDOC_API void pandoc_result_free(pandoc_result *result);

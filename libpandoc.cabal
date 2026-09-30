@@ -44,6 +44,7 @@ library
   hs-source-dirs:   src
   exposed-modules:  LibPandoc.Query
                     LibPandoc.Result
+                    LibPandoc.Untrusted
 
 foreign-library pandoc
   import:           deps

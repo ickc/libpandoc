@@ -103,6 +103,7 @@ import qualified Text.Pandoc.UTF8 as UTF8
 import Text.Pandoc.Version (pandocVersionText)
 
 import LibPandoc.Query (query)
+import LibPandoc.Untrusted (Call (..), untrusted, untrustedQuery)
 import LibPandoc.Result
 
 foreign export ccall "libpandoc_hs_convert"
@@ -146,13 +147,22 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   json <- peekBytes optPtr optLen
   input <- peekInput inPtr inLen hasIn
   let parsed = do
-        v <- Aeson.eitherDecodeStrict json
+        v0 <- Aeson.eitherDecodeStrict json
+        -- untrusted code doesn't read the process's stdin
+        when (isUntrusted v0 && isNothing input) $
+          Left "untrusted code gives pandoc_convert its input"
+        v <- untrusted Convert v0
         v' <- callbackFilters (fromIntegral nFilters) v
         Aeson.parseEither Aeson.parseJSON v'
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (f :: Opt -> Opt) ->
       convert (withHooks filters (fromIntegral nFilters)) (f defaultOpts) input
+
+-- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
+isUntrusted :: Aeson.Value -> Bool
+isUntrusted (Aeson.Object o) = KM.lookup "untrusted" o == Just (Aeson.Bool True)
+isUntrusted _ = False
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -306,9 +316,11 @@ hsReadMany ptr len = respond $ do
   json <- peekBytes ptr len
   let parsed = do
         v <- Aeson.eitherDecodeStrict json
-        flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o -> do
-          optsV <- fromMaybe (Aeson.object []) <$> o Aeson..:? "options"
-          f <- Aeson.parseJSON optsV
+        (optsV, o) <- flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o ->
+          (\opts -> (fromMaybe (Aeson.object []) opts, o)) <$> o Aeson..:? "options"
+        optsV' <- untrusted ReadMany optsV
+        flip Aeson.parseEither optsV' $ \_ -> do
+          f <- Aeson.parseJSON optsV'
           inputs <- o Aeson..: "inputs"
           pure (f defaultOpts, inputs)
   case parsed of
@@ -388,6 +400,7 @@ hsQuery ptr len = respond $ do
   json <- peekBytes ptr len
   out <- case Aeson.decodeStrict json of
     Just (Aeson.Object o)
+      | Left e <- untrustedQuery o -> throwIO $ PandocOptionError $ T.pack e
       | KM.lookup "query" o == Just (Aeson.String "parse-args") -> parseArgsQuery o
       | KM.lookup "query" o == Just (Aeson.String "num-threads") ->
           BL.toStrict . Aeson.encode <$> numThreads

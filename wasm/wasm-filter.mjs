@@ -19,46 +19,24 @@
 // A filter may call pandoc (libpandoc-rs's `libpandoc::read` and the like,
 // built for wasm): given `pandoc` (core.mjs's, from node.mjs or
 // browser.mjs), its `libpandoc` imports are this libpandoc.wasm's calls,
-// sandboxed as pandocrs sandboxes them (`allowed`, below): pandoc's
-// sandbox, and no options that read or write files or run programs.
+// marked untrusted (below), so that libpandoc allows them only pandoc's
+// sandbox and no options that read or write files or run programs.
 
 import { ConsoleStdout, File, OpenFile, WASI } from "@bjorn3/browser_wasi_shim";
 
 const fromUtf8 = new TextDecoder("utf-8");
 const toUtf8 = new TextEncoder();
 
-// What a wasm filter may give pandoc: as libpandoc-rs's wasm.rs (keep the
-// two the same).
-export const READ_OPTIONS = ["from", "reader", "columns", "default-image-extension",
-  "indented-code-classes", "preserve-tabs", "strip-comments", "tab-stop", "track-changes", "sandbox"];
-export const WRITE_OPTIONS = ["to", "writer", "ascii", "cite-method", "dpi", "email-obfuscation", "eol",
-  "fail-if-warnings", "figure-caption-position", "html-math-method", "html-q-tags", "identifier-prefix",
-  "incremental", "list-tables", "listings", "markdown-headings", "metadata", "number-offset",
-  "number-sections", "reference-links", "reference-location", "reference-section-title", "section-divs",
-  "shift-heading-level-by", "slide-level", "split-level", "standalone", "table-caption-position",
-  "table-of-contents", "title-prefix", "toc", "toc-depth", "top-level-division", "variables",
-  "verbosity", "wrap"];
-export const QUERIES = ["version", "api-version", "input-formats", "output-formats",
-  "highlight-languages", "highlight-styles", "extensions-for-format", "num-threads"];
-
 class Refused extends Error {}
 
-/** `options` as a wasm filter may give them for `call` ("convert" or
- *  "read_many"), with pandoc's sandbox on; throws naming what isn't
- *  allowed. Formats are names (not Lua scripts), and not pdf. */
-export function allowed(call, options) {
-  const refuse = (what) => { throw new Refused(`not allowed in a wasm filter: ${what}`); };
-  if (options === null || typeof options !== "object" || Array.isArray(options))
-    refuse("options that aren't an object");
-  for (const [k, v] of Object.entries(options)) {
-    if (!(READ_OPTIONS.includes(k) || (call === "convert" && WRITE_OPTIONS.includes(k)))) refuse(k);
-    if (["from", "reader", "to", "writer"].includes(k)) {
-      const ok = typeof v === "string" && /^[A-Za-z0-9_]+([+-][A-Za-z0-9_]+)*$/.test(v)
-        && !(v === "pdf" && (k === "to" || k === "writer"));
-      if (!ok) refuse(`${k}: ${JSON.stringify(v)}`);
-    }
-  }
-  return { ...options, sandbox: true };
+/** What a filter gives pandoc (`options` or a query), marked for libpandoc
+ *  to check (`"untrusted": true`, libpandoc 1.7): it accepts only what reads
+ *  and writes no files and runs nothing, with pandoc's sandbox on. */
+function untrusted(abi, what) {
+  if (abi.abiVersion() < 1007) throw new Refused("a wasm filter calling pandoc needs libpandoc 1.7 (\"untrusted\")");
+  if (what === null || typeof what !== "object" || Array.isArray(what))
+    throw new Refused("not allowed for untrusted code: options that aren't an object");
+  return { ...what, untrusted: true };
 }
 
 // The `libpandoc` imports (libpandoc-rs's guest.rs) on core.mjs's abi;
@@ -85,25 +63,21 @@ function libpandocImports(abi, memory) {
   return {
     convert(o, on, i, iN, has) {
       return answer(() => {
-        const options = allowed("convert", json(o, on));
+        const options = untrusted(abi, json(o, on));
         if (!has) throw new Refused("a wasm filter gives convert its input");
         return abi.convert(JSON.stringify(options), bytes(i, iN));
       });
     },
     read_many(p, n) {
       return answer(() => {
-        // pandoc_read_many's "sandbox" came in libpandoc 1.6
-        if (abi.abiVersion() < 1006) throw new Refused("read_many in a wasm filter needs libpandoc 1.6 (its sandbox)");
         const req = json(p, n);
-        req.options = allowed("read_many", req.options ?? {});
+        req.options = untrusted(abi, req?.options ?? {});
         return abi.readMany(JSON.stringify(req));
       });
     },
     query(p, n) {
       return answer(() => {
-        const q = json(p, n);
-        if (!QUERIES.includes(q?.query)) throw new Refused(`query not allowed in a wasm filter: ${q?.query}`);
-        return abi.query(JSON.stringify(q));
+        return abi.query(JSON.stringify(untrusted(abi, json(p, n))));
       });
     },
     result_len: (i) => part(i).length,
