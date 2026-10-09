@@ -1,5 +1,5 @@
 -- libpandoc.wasm (scripts/build-wasm.sh): the wasm32 part of pandoc's own
--- cabal.project (pandoc 3.12), whose pandoc.wasm build this follows, with
+-- cabal.project (pandoc 3.12.1), whose pandoc.wasm build this follows, with
 -- its patches in wasm/patches. Build with --builddir=dist-wasm, so that the
 -- patches' relative paths resolve.
 packages: .
