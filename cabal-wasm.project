@@ -1,5 +1,5 @@
 -- libpandoc.wasm (scripts/build-wasm.sh): the wasm32 part of pandoc's own
--- cabal.project (pandoc 3.12.1), whose pandoc.wasm build this follows, with
+-- cabal.project (pandoc 3.13), whose pandoc.wasm build this follows, with
 -- its patches in wasm/patches. Build with --builddir=dist-wasm, so that the
 -- patches' relative paths resolve.
 packages: .
@@ -44,7 +44,11 @@ package pandoc-lua-engine
   flags: -repl
 
 package libpandoc
-  ld-options: -lwasi-emulated-process-clocks -lwasi-emulated-signal -lsetjmp
+  -- ghc-options rather than ld-options, as upstream's since 3.13: cabal only
+  -- passes ld-options along when it finds an `ld` program on the PATH.
+  ghc-options: -optl-lwasi-emulated-process-clocks
+               -optl-lwasi-emulated-signal
+               -optl-lsetjmp
 
 allow-newer:
   all:base,
