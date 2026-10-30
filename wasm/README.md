@@ -78,14 +78,17 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   terminate it.
 - **Pyodide:** `wasm/emscripten-fs.mjs` makes WASI directories out of
   Pyodide's filesystem, so that Python and pandoc see the same files:
-  `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. libpandoc-python
-  on Pyodide (its `_wasm` backend) passes 46 of its 49 tests on it; the
-  other 3 need threads.
+  `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. `pyodide.mjs`
+  does this for libpandoc-python (Pyodide's `/` and `/tmp` as pandoc's),
+  and `scripts/bundle-pyodide.sh` bundles it into one file,
+  `libpandoc-pyodide.mjs`, which the `continuous` release carries and
+  libpandoc-python's wheel for Pyodide ships. libpandoc-python on Pyodide
+  passes its tests on it but the 3 that need threads.
 - **Tests** (`npm install` in `wasm/` first): `test.mjs` (Node),
   `test-browser.mjs` (Chromium, Firefox, WebKit with Playwright),
   `test-pyodide.mjs` (Python filters in Pyodide), `test-pyodide-suite.mjs`
   (libpandoc-python's tests in Pyodide; `SHIM=1` through the shared
-  filesystem). CI runs them all.
+  filesystem; `WHEEL=` its wheel for Pyodide, loading itself). CI runs them all.
 - **Benchmark:** `bench-browser.mjs`: the same filters as Lua, panir JS and
   panir Python (Pyodide), in one conversion, in browsers. On pandoc's
   MANUAL (299 KB, markdown to HTML, about 1 s), a Python filter adds 10–20%,

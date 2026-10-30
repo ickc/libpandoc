@@ -203,6 +203,12 @@ jobs:
           set -e
           exit $status
 
+      # the JS libpandoc-python's wheel for Pyodide carries (wasm/pyodide.mjs)
+      - name: Bundle for Pyodide
+        run: |
+          source ~/.ghc-wasm/env
+          bash scripts/bundle-pyodide.sh dist/wasm
+
       - name: Test in browsers (Chromium, Firefox, WebKit)
         run: |
           mkdir -p "$RUNNER_TEMP/browsers" && cd "$RUNNER_TEMP/browsers"
@@ -214,11 +220,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-libpandoc
-          path: dist/wasm/libpandoc.wasm
+          path: |
+            dist/wasm/libpandoc.wasm
+            dist/wasm/libpandoc-pyodide.mjs
 
   # Every push to main replaces the assets of the `continuous` pre-release,
-  # which downstream CI (libpandoc-python) downloads: the native builds and
-  # libpandoc.wasm.
+  # which downstream CI (libpandoc-python) downloads: the native builds,
+  # libpandoc.wasm and its bundled JS for Pyodide.
   publish:
     needs: [build, wasm]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -241,4 +249,4 @@ jobs:
           gh release view continuous >/dev/null 2>&1 ||
             gh release create continuous --prerelease --title continuous \
               --notes "Latest build of main. Replaced on every push."
-          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm --clobber
+          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs --clobber
