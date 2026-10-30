@@ -38,6 +38,15 @@ test("Lua filters", () => {
   assert.equal(pandoc.convert({ from: "markdown", to: "plain", filters: ["/tmp/upper.lua"] }, "hi"), "HI\n");
 });
 
+test("relative paths resolve against chdir's directory", () => {
+  writeFileSync(join(pandoc.tmp, "rel.md"), "# rel");
+  assert.throws(() => pandoc.convert({ to: "html", "input-files": ["rel.md"] }), PandocError);
+  // (for good: "/" is no directory here, only /tmp is preopened)
+  pandoc.chdir("/tmp");
+  assert.equal(pandoc.convert({ to: "html", "input-files": ["rel.md"] }), '<h1 id="rel">rel</h1>\n');
+  assert.throws(() => pandoc.chdir("/no/such/dir"), /can't change/);
+});
+
 test("a JS filter inside the conversion, told the formats", () => {
   let seen;
   const upper = (doc, ctx) => {

@@ -84,4 +84,4 @@ executable libpandoc-wasm
   other-modules:    LibPandoc
   c-sources:        cbits/libpandoc.c
   ghc-options:      -no-hs-main -optl-mexec-model=reactor
-                    "-optl-Wl,--export=malloc,--export=free,--export=pandoc_init,--export=pandoc_abi_version,--export=pandoc_convert,--export=pandoc_convert_args,--export=pandoc_convert_filters,--export=pandoc_convert_args_filters,--export=pandoc_read_many,--export=pandoc_query,--export=pandoc_result_free,--export=pandoc_buffer_set"
+                    "-optl-Wl,--export=malloc,--export=free,--export=pandoc_init,--export=pandoc_abi_version,--export=pandoc_convert,--export=pandoc_convert_args,--export=pandoc_convert_filters,--export=pandoc_convert_args_filters,--export=pandoc_read_many,--export=pandoc_query,--export=pandoc_result_free,--export=pandoc_buffer_set,--export=chdir"

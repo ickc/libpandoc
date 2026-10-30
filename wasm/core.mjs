@@ -170,6 +170,11 @@ export async function start(module, wasi) {
             take(ex.pandoc_convert_args_filters(argc, argv, ip, iN, arr, n))))),
     readMany: (request) => withAlloc([request], ([p, n]) => take(ex.pandoc_read_many(p, n))),
     query: (q) => withAlloc([q], ([p, n]) => take(ex.pandoc_query(p, n))),
+    // pandoc's working directory (wasi-libc's; "/" at first), against which
+    // relative paths resolve: 0, or -1 if there is no such directory (or
+    // the module predates the export)
+    chdir: (path) =>
+      ex.chdir ? withAlloc([utf8.encode(path + "\0")], ([p]) => ex.chdir(p)) : -1,
   };
   for (const k of Object.keys(abi)) abi[k] = guard(abi[k]);
 
@@ -215,6 +220,11 @@ export async function start(module, wasi) {
     },
     readMany(inputs, options = {}) {
       return JSON.parse(str(ok(abi.readMany(JSON.stringify({ options, inputs }))).output));
+    },
+    /** Set pandoc's working directory (an absolute path in its
+     *  filesystem; "/" at first), against which relative paths resolve. */
+    chdir(path) {
+      if (abi.chdir(path) !== 0) throw new Error(`libpandoc.wasm: can't change to ${path}`);
     },
   };
 }

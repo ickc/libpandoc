@@ -83,7 +83,9 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   and `scripts/bundle-pyodide.sh` bundles it into one file,
   `libpandoc-pyodide.mjs`, which the `continuous` release carries and
   libpandoc-python's wheel for Pyodide ships. libpandoc-python on Pyodide
-  passes its tests on it but the 3 that need threads.
+  passes its tests on it but the 3 that need threads. `chdir(path)` sets
+  pandoc's working directory (wasi-libc's, `/` at first), against which
+  relative paths resolve: libpandoc-python sets it to Python's.
 - **Tests** (`npm install` in `wasm/` first): `test.mjs` (Node),
   `test-browser.mjs` (Chromium, Firefox, WebKit with Playwright),
   `test-pyodide.mjs` (Python filters in Pyodide), `test-pyodide-suite.mjs`
