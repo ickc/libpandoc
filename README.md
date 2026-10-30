@@ -133,7 +133,9 @@ libraries into `lib/libpandoc/` with relative RPATHs (about 300 MB, 60 MB
 compressed). The Windows DLL is standalone.
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
-and each push to `main` updates the `continuous` pre-release.
+and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the
+musllinux_1_2 container with GHC's Alpine bindist, smoke-tested on plain
+Alpine), and each push to `main` updates the `continuous` pre-release.
 
 ## License
 

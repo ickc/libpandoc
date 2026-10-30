@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Build and stage libpandoc inside a manylinux container, so that it (and the
-# Python wheels that bundle it) runs on any Linux with glibc >= 2.28.
+# Python wheels that bundle it) runs on any Linux with glibc >= 2.28; or in a
+# musllinux one (Alpine: GHC's Alpine bindist, through ghcup), for any Linux
+# with musl >= 1.2.
 #
 #   podman run --rm -v "$PWD:/work" -v "$HOME/.cache/libpandoc-manylinux:/cache" \
 #     -w /work quay.io/pypa/manylinux_2_28_x86_64 bash scripts/manylinux.sh dist
+#   podman run --rm -v "$PWD:/work" -v "$HOME/.cache/libpandoc-musllinux:/cache" \
+#     -w /work quay.io/pypa/musllinux_1_2_x86_64 bash scripts/manylinux.sh dist
 #
-# /cache (optional) keeps ghcup's GHC and the cabal store between runs.
+# /cache (optional) keeps ghcup's GHC and the cabal store between runs (one
+# per libc).
 set -euo pipefail
 out=${1:-dist}
 
@@ -14,7 +19,11 @@ set -a
 . ./pins.env
 set +a
 
-dnf install -y -q gmp-devel zlib-devel ncurses-compat-libs xz >/dev/null
+if command -v apk >/dev/null; then
+	apk add -q gmp-dev zlib-dev ncurses-dev libffi-dev xz patchelf curl git
+else
+	dnf install -y -q gmp-devel zlib-devel ncurses-compat-libs xz >/dev/null
+fi
 
 cache=/cache
 mkdir -p "$cache"

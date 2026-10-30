@@ -22,8 +22,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { subdir: linux-64, os: ubuntu-24.04 }
-          - { subdir: linux-aarch64, os: ubuntu-24.04-arm }
+          - { subdir: linux-64, os: ubuntu-24.04, image: manylinux_2_28 }
+          - { subdir: linux-aarch64, os: ubuntu-24.04-arm, image: manylinux_2_28 }
+          # musl (Alpine and the like): for musllinux wheels
+          - { subdir: linux-64-musl, os: ubuntu-24.04, image: musllinux_1_2 }
+          - { subdir: linux-aarch64-musl, os: ubuntu-24.04-arm, image: musllinux_1_2 }
           - { subdir: osx-64, os: macos-15-intel }
           - { subdir: osx-arm64, os: macos-15 }
           - { subdir: win-64, os: windows-2022 }
@@ -36,7 +39,8 @@ jobs:
       - name: Read pins
         run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
 
-      # Linux builds in a manylinux container instead (scripts/manylinux.sh)
+      # Linux builds in a manylinux or musllinux container instead
+      # (scripts/manylinux.sh)
       - name: Set up GHC
         if: runner.os != 'Linux'
         id: ghc
@@ -55,7 +59,7 @@ jobs:
         id: store
         run: |
           if [[ $RUNNER_OS == Linux ]]; then
-            # ghcup and the cabal store of the manylinux container
+            # ghcup and the cabal store of the container
             echo "path=$HOME/manylinux-cache" >> "$GITHUB_OUTPUT"
           else
             echo "path=${{ steps.ghc.outputs.cabal-store }}" >> "$GITHUB_OUTPUT"
@@ -69,13 +73,13 @@ jobs:
           key: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-${{ env.INDEX_STATE }}-${{ hashFiles('libpandoc.cabal', 'cabal.project', 'scripts/build.sh') }}
           restore-keys: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-
 
-      - name: Build (manylinux_2_28 container)
+      - name: Build (${{ matrix.image }} container)
         if: runner.os == 'Linux'
         run: |
           mkdir -p "$HOME/manylinux-cache"
           docker run --rm -v "$PWD:/work" -v "$HOME/manylinux-cache:/cache" -w /work \
             -e CABALOPTS=-j -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-            "quay.io/pypa/manylinux_2_28_$(uname -m)" bash scripts/manylinux.sh dist
+            "quay.io/pypa/${{ matrix.image }}_$(uname -m)" bash scripts/manylinux.sh dist
 
       - name: Build
         if: runner.os != 'Linux'
@@ -93,8 +97,18 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
       # On Linux this also checks portability: built against glibc 2.28, run
-      # on the runner's Ubuntu.
+      # on the runner's Ubuntu; musl's, in a plain Alpine (no GHC, no -dev
+      # packages: the libraries it bundles and the system's own only).
+      - name: Smoke test (C, musl)
+        if: matrix.image == 'musllinux_1_2'
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work alpine:3.22 sh -c '
+            apk add -q gcc musl-dev gmp zlib libffi libstdc++ &&
+            cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" &&
+            dist/smoke dist/share/libpandoc/api-version.json && rm dist/smoke'
+
       - name: Smoke test (C)
+        if: matrix.image != 'musllinux_1_2'
         run: |
           case "$RUNNER_OS" in
             Linux)   cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;

@@ -96,6 +96,9 @@ if [[ -n $darwin ]]; then
 		"$here/../libpandoc.def" >"$exports"
 	"$cc" "${kept[@]}" ${archives[@]+"${archives[@]}"} -Wl,-exported_symbols_list,"$exports"
 else
-	exec "$cc" "${kept[@]}" -Wl,--exclude-libs,ALL \
+	# --no-as-needed: the shared libraries come before the archives that
+	# use them, and Alpine's (musl's) GCC drops them otherwise (glibc's
+	# toolchains link so by default)
+	exec "$cc" -Wl,--no-as-needed "${kept[@]}" -Wl,--exclude-libs,ALL \
 		-Wl,--start-group ${archives[@]+"${archives[@]}"} -Wl,--end-group
 fi
