@@ -36,7 +36,14 @@ if [[ ! -x $cache/.ghcup/bin/ghcup ]]; then
 	chmod +x "$cache/.ghcup/bin/ghcup"
 fi
 ghcup install ghc "$GHC_VERSION" --set
-ghcup install cabal "$CABAL_VERSION" --set
+if [[ $(uname -m) == aarch64 ]]; then
+	# ghcup's aarch64 glibc cabal needs a newer glibc than manylinux_2_28's
+	# (2.34 for 3.18); its Alpine build is static and runs on either libc
+	ghcup install cabal "$CABAL_VERSION" --set -u \
+		"https://downloads.haskell.org/~ghcup/unofficial-bindists/cabal/$CABAL_VERSION/cabal-install-$CABAL_VERSION-aarch64-linux-alpine.tar.xz"
+else
+	ghcup install cabal "$CABAL_VERSION" --set
+fi
 
 git config --global --add safe.directory '*'
 bash scripts/build.sh "$out"
