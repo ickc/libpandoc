@@ -34,7 +34,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Read pins
         run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
@@ -67,7 +67,7 @@ jobs:
 
       - name: Restore cabal store
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ steps.store.outputs.path }}
           key: cabal-${{ matrix.subdir }}-ghc${{ env.GHC_VERSION }}-${{ env.INDEX_STATE }}-${{ hashFiles('libpandoc.cabal', 'cabal.project', 'scripts/build.sh') }}
@@ -91,7 +91,7 @@ jobs:
 
       - name: Save cabal store
         if: always() && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ steps.store.outputs.path }}
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -132,7 +132,7 @@ jobs:
       - name: Archive
         run: tar -czf libpandoc-${{ matrix.subdir }}.tar.gz -C dist .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libpandoc-${{ matrix.subdir }}
           path: libpandoc-${{ matrix.subdir }}.tar.gz
@@ -143,14 +143,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Read pins
         run: grep -E '^[A-Z_]+=' pins.env >> "$GITHUB_ENV"
 
       - name: Restore wasm cabal store
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.ghc-wasm/.cabal
           key: cabal-wasm-${{ env.GHC_WASM_META_REV }}-${{ env.INDEX_STATE }}-${{ hashFiles('cabal-wasm.project', 'libpandoc.cabal') }}
@@ -166,7 +166,7 @@ jobs:
 
       - name: Save wasm cabal store
         if: always() && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/.ghc-wasm/.cabal
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -231,7 +231,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           NODE_MODULES="$RUNNER_TEMP/browsers/node_modules" node wasm/test-browser.mjs
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm-libpandoc
           path: |
@@ -248,11 +248,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: libpandoc-*
           merge-multiple: true
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: wasm-libpandoc
       - name: Upload to the continuous release
