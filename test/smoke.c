@@ -286,6 +286,15 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
     }
 
+    /* a conversion failing because of its warnings returns them */
+    {
+        const char *fw = "{\"to\": \"html\", \"fail-if-warnings\": true, \"embed-resources\": true}";
+        r = pandoc_convert(fw, strlen(fw), "![x](no-such-image.png)", 23);
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocFailOnWarningError") == 0
+              && strstr(r->log, "CouldNotFetchResource"), "fail-if-warnings: the warnings in the log");
+        pandoc_result_free(r);
+    }
+
     /* threads */
     {
         const char *nq = "{\"query\": \"num-threads\"}";

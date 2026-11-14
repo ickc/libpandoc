@@ -714,11 +714,18 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
             t -> t
         }
   engine <- engineWith opts' <$> getEngine
-  convertWithOpts engine (routeFilters opts')
-  out <- if toStdout then B.readFile stdoutFile else pure B.empty
+  done <- try (convertWithOpts engine (routeFilters opts'))
+  -- the log, also of a conversion that failed after writing it (as
+  -- --fail-if-warnings does, its warnings being the reason); but not the
+  -- caller's own log file then, which may be an earlier conversion's
   logged <- doesFileExist logFile
-  logJson <- if logged then B.readFile logFile else pure "[]"
-  pure $ Result out Nothing logJson
+  let fresh = either (const (isNothing (optLogFile opts))) (const True) done
+  logJson <- if logged && fresh then B.readFile logFile else pure "[]"
+  case done of
+    Left (e :: SomeException) -> pure $ Result B.empty (Just (describe e)) logJson
+    Right () -> do
+      out <- if toStdout then B.readFile stdoutFile else pure B.empty
+      pure $ Result out Nothing logJson
 
 -- | Run an action and hand the result to C, turning any exception into an
 -- error result: nothing may escape into the host process.

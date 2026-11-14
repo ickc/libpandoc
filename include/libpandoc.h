@@ -65,7 +65,9 @@ typedef struct pandoc_result {
     char *error_kind;
     char *error_message;
     /* NUL-terminated JSON array of pandoc's log messages (warnings and
-     * info), as written by --log. Never NULL. */
+     * info), as written by --log. Never NULL. On failure, those pandoc
+     * logged before failing, if it did (--fail-if-warnings's warnings);
+     * else []. */
     char *log;
 } pandoc_result;
 
