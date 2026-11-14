@@ -103,6 +103,15 @@ fetched. So a bibliography given as metadata (`-M`, a metadata file, a
 filter) isn't read either, nor the data directory's `csl/`; name them
 in those options.
 
+In libpandoc.wasm under a host that opens only some directories to it
+(the bindings' directory sandbox), a path leaving them through `..` or a
+symbolic link fails with "permission denied" where a missing file fails
+with "does not exist", and pandoc prints some such errors as they are
+(AsciiDoc and Typst includes, images): a document can thus learn that a
+path it names lies outside those directories, though nothing of what is
+there. Where even that must stay hidden, run the conversion where only
+those directories exist: a container, or a virtual machine.
+
 ### Filters in the caller's language
 
 `pandoc_convert_filters` runs filters the caller implements (a C function
