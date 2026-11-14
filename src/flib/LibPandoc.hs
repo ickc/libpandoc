@@ -467,10 +467,11 @@ hsQuery ptr len = respond $ do
   pure $ Result out Nothing "[]"
 
 -- | @pandoc_set_num_threads@: the number of capabilities, from now on
--- (at least 1); returns the new number.
+-- (at least 1, at most one per processor: 'withinProcessors'); returns the
+-- new number.
 hsSetNumThreads :: CInt -> IO CInt
 hsSetNumThreads n = withMVar capabilitiesLock $ \() -> do
-  let n' = max 1 (fromIntegral n)
+  n' <- withinProcessors (fromIntegral n)
   writeIORef threadsSet (Just n')
   expanded <- readIORef threadsExpanded
   when (expanded && rtsSupportsBoundThreads) $ setNumCapabilities n'
@@ -499,14 +500,25 @@ capabilitiesLock = unsafePerformIO (newMVar ())
 
 -- | The number of capabilities to use: as set, else
 -- @LIBPANDOC_NUM_THREADS@, else one per processor this process may use.
+-- The only number 'setNumCapabilities' is given (besides the runtime's
+-- first, 1).
 numThreads :: IO Int
 numThreads = readIORef threadsSet >>= \case
   Just n -> pure n
   Nothing -> do
     env <- lookupEnv "LIBPANDOC_NUM_THREADS"
     case reads <$> env of
-      Just [(n, "")] | n > 0 -> pure n
-      _ -> getNumProcessors
+      Just [(n, "")] | n > 0 -> withinProcessors n
+      _ -> withinProcessors maxBound
+
+-- | At least 1, at most the number of processors this process may use (its
+-- CPU affinity, as GHC counts them). More capabilities than processors
+-- help nobody, and changed while conversions run they crash GHC's parallel
+-- garbage collector with @-qi1@ (GHC 9.10.3; UPSTREAM.md in the project).
+withinProcessors :: Int -> IO Int
+withinProcessors n = do
+  processors <- getNumProcessors
+  pure (max 1 (min (max 1 processors) n))
 
 threadsSet :: IORef (Maybe Int)
 threadsSet = unsafePerformIO (newIORef Nothing)
