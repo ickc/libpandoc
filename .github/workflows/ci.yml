@@ -99,29 +99,35 @@ jobs:
       # On Linux this also checks portability: built against glibc 2.28, run
       # on the runner's Ubuntu; musl's, in a plain Alpine (no GHC, no -dev
       # packages: the libraries it bundles and the system's own only).
-      - name: Smoke test (C, musl)
+      # the smoke test, then the sandbox (citeproc) test
+      - name: Tests (C, musl)
         if: matrix.image == 'musllinux_1_2'
         run: |
           docker run --rm -v "$PWD:/work" -w /work alpine:3.24 sh -c '
             apk add -q gcc musl-dev gmp zlib libffi libstdc++ &&
-            cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" &&
-            dist/smoke dist/share/libpandoc/api-version.json && rm dist/smoke'
+            for t in smoke sandbox; do
+              cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" || exit 1
+            done &&
+            dist/smoke dist/share/libpandoc/api-version.json && dist/sandbox &&
+            rm dist/smoke dist/sandbox'
 
-      - name: Smoke test (C)
+      - name: Tests (C)
         if: matrix.image != 'musllinux_1_2'
         run: |
-          case "$RUNNER_OS" in
-            Linux)   cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
-            macOS)   cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
-            Windows) gcc -Wall -o dist/bin/smoke.exe test/smoke.c -Idist/include dist/bin/pandoc.dll
-                     cp dist/bin/smoke.exe dist/smoke ;;
-          esac
+          for t in smoke sandbox; do
+            case "$RUNNER_OS" in
+              Linux)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
+              macOS)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
+              Windows) gcc -Wall -o dist/bin/$t.exe test/$t.c -Idist/include dist/bin/pandoc.dll ;;
+            esac
+          done
           if [[ $RUNNER_OS == Windows ]]; then
-            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json)
-            rm dist/smoke dist/bin/smoke.exe
+            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json && ./sandbox.exe)
+            rm dist/bin/smoke.exe dist/bin/sandbox.exe
           else
             dist/smoke dist/share/libpandoc/api-version.json
-            rm dist/smoke
+            dist/sandbox
+            rm dist/smoke dist/sandbox
           fi
 
       - name: Show size

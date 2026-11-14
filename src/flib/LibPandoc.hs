@@ -23,7 +23,7 @@ should rarely need changes when pandoc does.
 temporary files, as the wasm build uses a virtual file system.
 
 Filters use one more public interface: the engine's 'engineApplyFilter',
-which pandoc calls for every Lua filter. Two kinds of filter become Lua
+which pandoc calls for every Lua filter. Three kinds of filter become Lua
 filters with reserved paths, which the engine given to 'convertWithOpts'
 answers itself:
 
@@ -31,7 +31,9 @@ answers itself:
   function;
 * JSON filters: by running them as pandoc does ('runJSONFilter'), but also
   telling them the input and output formats, in @PANDOC_INPUT_FORMAT@ and
-  @PANDOC_OUTPUT_FORMAT@, as proposed upstream (jgm/pandoc#11016).
+  @PANDOC_OUTPUT_FORMAT@, as proposed upstream (jgm/pandoc#11016);
+* citeproc, with the sandbox on: by running it inside pandoc's sandbox
+  ('citeprocSandboxed'), which pandoc itself doesn't do.
 -}
 module LibPandoc () where
 
@@ -55,7 +57,7 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.List (intersperse, stripPrefix)
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe, maybeToList)
 import Data.Scientific (toBoundedInteger)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -71,22 +73,25 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO (hClose, hFlush, hPutStrLn, stderr, stdout)
 import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
-import Text.Pandoc.App (Filter (..), LineEnding (..), Opt (..), OptInfo (..),
+import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts, handleOptInfo,
                         defaultOpts,
                         options, parseOptionsFromArgs)
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
+import Text.Pandoc.Citeproc (processCitations)
 import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
-                          readFileStrict, runIO, runIOorExplode, sandbox, setResourcePath,
-                          setUserDataDir)
+                          readFileStrict, runIO, runIOorExplode, runPure, sandbox,
+                          setResourcePath, setUserDataDir)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Shared (tabFilter)
 import Text.Pandoc.Definition (Pandoc)
 import Text.Pandoc.Error (PandocError (..), handleError, renderError)
-import Text.Pandoc.Extensions (extensionsToList, showExtension)
-import Text.Pandoc.Filter (Environment (..))
+import Text.Pandoc.Extensions (Extension (Ext_citations), disableExtension,
+                               enableExtension, extensionEnabled,
+                               extensionsToList, showExtension)
+import Text.Pandoc.Filter (Environment (..), Filter (..))
 import qualified Text.Pandoc.Format as Format
 import Text.Pandoc.Logging (Verbosity (ERROR))
 #if defined(wasm32_HOST_ARCH)
@@ -196,18 +201,71 @@ callbackFilters _ v = Right v
 jsonPrefix :: String
 jsonPrefix = "libpandoc:json/"
 
+-- | The path standing for citeproc run in the sandbox ('citeprocSandboxed').
+citeprocPath :: FilePath
+citeprocPath = "libpandoc:citeproc"
+
 -- | Route JSON filters through the engine, as Lua filters with reserved
 -- paths, so that 'withHooks' runs them. (Not @pandoc-citeproc@, which pandoc
 -- itself looks for among the JSON filters, to warn that it's deprecated.)
-routeJSONFilters :: Opt -> Opt
-routeJSONFilters opts = opts { optFilters = map route (optFilters opts) }
+-- With the sandbox on, citeproc too, where it stands among the filters.
+routeFilters :: Opt -> Opt
+routeFilters opts
+  | optSandbox opts && CiteprocFilter `elem` optFilters opts =
+      withoutCitations routed
+  | otherwise = routed
   where
+    routed = opts { optFilters = map route (optFilters opts) }
     route (JSONFilter f)
       | takeBaseName f /= "pandoc-citeproc" = LuaFilter (jsonPrefix ++ f)
+    route CiteprocFilter | optSandbox opts = LuaFilter citeprocPath
     route f = f
 
+-- | Citeproc as pandoc runs it, but inside pandoc's pure sandbox, with only
+-- the files the caller named in the options: pandoc's @--sandbox@ runs the
+-- reader and the writer so, but not citeproc (jgm/pandoc's App.hs), which
+-- would otherwise read, or fetch, whatever bibliography, CSL style or
+-- abbreviations a document names (in its metadata, or with LaTeX's
+-- bibliography commands). Anything else is missing, as a file that
+-- doesn't exist is: nothing else is read from the disk, nothing is fetched
+-- (a CSL style's parent neither), and the data directory's styles aren't
+-- looked in (pandoc's own are). The list is the citeproc part of what
+-- pandoc's sandbox gives its reader and writer (@sandbox'@ in
+-- Text.Pandoc.App.OutputSettings), so not a @bibliography@ given as
+-- metadata (@-M@, a metadata file), as there.
+citeprocSandboxed :: (PandocMonad m, MonadIO m) => Opt -> Pandoc -> m Pandoc
+citeprocSandboxed opts = sandbox files . processCitations
+  where
+    files = maybeToList (optCSL opts) ++ maybeToList (optCitationAbbreviations opts)
+              ++ optBibliography opts
+
+-- | pandoc turns the writer's @citations@ extension off when citeproc is
+-- among the filters (so that markdown, org and typst write the citations
+-- as citeproc rendered them, not their own citation syntax:
+-- jgm/pandoc#10662), looking for 'CiteprocFilter' there; routed through
+-- the engine, it isn't, so the output format says it instead. Not for PDF
+-- output without a format named, whose writer pandoc picks by the PDF
+-- engine (typst's would write its own citations).
+withoutCitations :: Opt -> Opt
+withoutCitations opts = case writerFormat of
+  Just (Format.FlavoredFormat name diff)
+    | extensionEnabled Ext_citations
+        (Format.extsSupported (Format.getExtensionsConfig name)) ->
+        opts { optTo = Just $ renderFormat $ Format.FlavoredFormat name diff
+                 { Format.extsToEnable = disableExtension Ext_citations (Format.extsToEnable diff)
+                 , Format.extsToDisable = enableExtension Ext_citations (Format.extsToDisable diff) } }
+  _ -> opts
+  where
+    -- as pandoc's optToOutputSettings decides it
+    writerFormat = case optTo opts of
+      Just "pdf" -> Nothing
+      Just f -> either (const Nothing) Just (runPure (Format.parseFlavoredFormat f))
+      Nothing
+        | map toLower (takeExtension (fromMaybe "" (optOutputFile opts))) == ".pdf" -> Nothing
+        | otherwise -> Format.formatFromFilePaths (maybeToList (optOutputFile opts))
+
 -- | The engine, answering the reserved paths: callback filters by calling
--- them, JSON filters by running them.
+-- them, JSON filters by running them, citeproc in the sandbox.
 withHooks :: Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
 withHooks filters n opts engine = engine { engineApplyFilter = apply }
   where
@@ -223,6 +281,7 @@ withHooks filters n opts engine = engine { engineApplyFilter = apply }
           -- as pandoc's expandFilterPath does for JSON filters
           f' <- fromMaybe f <$> findFileWithDataFallback "filters" f
           liftIO (runJSONFilter opts env args f' doc) >>= either throwError pure
+      | path == citeprocPath = citeprocSandboxed opts doc
       | otherwise = engineApplyFilter engine env args path doc
 
 -- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
@@ -505,7 +564,7 @@ hsMain argc argv fPtr fLen filters nFilters = do
         Right opts0 -> do
           let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
           convertWithOpts (withHooks filters (fromIntegral nFilters) opts engine)
-                          (routeJSONFilters opts)
+                          (routeFilters opts)
   hFlush stdout
   hFlush stderr
   case r of
@@ -588,8 +647,8 @@ renderFormat (Format.FlavoredFormat name diff) =
     exts sign = T.concat . map ((sign <>) . showExtension) . extensionsToList
 
 -- | Run a conversion as the pandoc CLI would, but with @input@ (if given) as
--- stdin and stdout captured, JSON filters routed through the engine, and
--- the Lua engine adapted by @engineWith@.
+-- stdin and stdout captured, filters routed through the engine
+-- ('routeFilters'), and the Lua engine adapted by @engineWith@.
 convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Opt
         -> Maybe B.ByteString -> IO Result
 convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
@@ -631,7 +690,7 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
             t -> t
         }
   engine <- engineWith opts' <$> getEngine
-  convertWithOpts engine (routeJSONFilters opts')
+  convertWithOpts engine (routeFilters opts')
   out <- if toStdout then B.readFile stdoutFile else pure B.empty
   logged <- doesFileExist logFile
   logJson <- if logged then B.readFile logFile else pure "[]"
