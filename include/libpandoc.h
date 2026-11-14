@@ -44,7 +44,8 @@ extern "C" {
  * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
  * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
  * called from several threads at once and is clamped to the processors;
- * 1.9: parse-args's "options" and pandoc_convert's "opt").
+ * 1.9: parse-args's "options" and pandoc_convert's "opt", and a failed
+ * conversion's log).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -66,7 +67,9 @@ typedef struct pandoc_result {
     char *error_kind;
     char *error_message;
     /* NUL-terminated JSON array of pandoc's log messages (warnings and
-     * info), as written by --log. Never NULL. */
+     * info), as written by --log. Never NULL. On failure, those pandoc
+     * logged before failing, if it did (from 1.9: --fail-if-warnings's
+     * warnings); else []. */
     char *log;
 } pandoc_result;
 
