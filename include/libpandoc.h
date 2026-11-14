@@ -43,12 +43,13 @@ extern "C" {
  * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
  * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
  * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
- * called from several threads at once and is clamped to the processors).
+ * called from several threads at once and is clamped to the processors;
+ * 1.9: parse-args's "options" and pandoc_convert's "opt").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 8
+#define LIBPANDOC_ABI_VERSION_MINOR 9
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -103,6 +104,21 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * input:   bytes to use as standard input, or NULL to use the options'
  *          input-files (or, with neither, the process's real stdin, as the
  *          pandoc CLI would).
+ *
+ * "opt" (not a pandoc option, libpandoc's; from 1.9): all of pandoc's
+ * options at once, in pandoc's own JSON of them, as {"query": "parse-args"}
+ * gives them in "options". The conversion starts from these rather than
+ * from pandoc's defaults, and the other keys apply on top, as a defaults
+ * file's would (lists such as "filters" and "css" are added to). So a host
+ * can handle a command line through this one call: parse-args, change what
+ * it must (each key of "options" holds one option, whole: "input-files",
+ * "output-file", "template", "css", ...; mostly the defaults file's names),
+ * then pandoc_convert({"opt": options}): the conversion pandoc_main runs for
+ * those arguments, its output and messages returned as this call returns
+ * them (not --verbose's info about filters, which pandoc reports only when
+ * it prints them; --dump-args exits, which a library call can't). A key
+ * pandoc's options don't have is an error. Callback filters may stand in
+ * its "filters" too.
  *
  * Output goes to result->output unless the options set output-file. Captured
  * output has LF line endings unless the options set "eol"; files get
@@ -258,7 +274,10 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *   {"query": "parse-args", "args": [...]}
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":
- *                                         [...]} (defaults files included),
+ *                                         [...], "options": {...}} (defaults
+ *                                         files included; "options", from
+ *                                         1.9: all of them, which
+ *                                         pandoc_convert takes as "opt"),
  *                                         or {"informational": "VersionInfo"},
  *                                         or {"subcommand": "lua"} (or
  *                                         "server"), whose arguments aren't

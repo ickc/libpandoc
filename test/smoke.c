@@ -286,6 +286,62 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
     }
 
+    /* a command line through the library path (1.9): parse-args gives
+     * pandoc's options, pandoc_convert takes them back as "opt" */
+    {
+        const char *pq = "{\"query\": \"parse-args\", \"args\": [\"-t\", \"latex\", \"-s\","
+                         " \"-M\", \"title=*T*\", \"-V\", \"documentclass=book\", \"--toc\","
+                         " \"--wrap=none\", \"-f\", \"markdown-smart\", \"--number-sections\"]}";
+        r = pandoc_query(pq, strlen(pq));
+        const char *o = r && r->status == 0 ? strstr(r->output, "\"options\":{") : NULL;
+        check(o && strstr(r->output, "\"filters\":[]") && strstr(o, "\"documentclass\":\"book\""),
+              "parse-args: pandoc's options");
+        char *opt = NULL;
+        if (o) {
+            /* {"opt": <the options>}: "options" is the answer's last key */
+            o += strlen("\"options\":");
+            size_t n = strlen(o) - 1;
+            opt = malloc(n + 16);
+            sprintf(opt, "{\"opt\": %.*s}", (int)n, o);
+        }
+        pandoc_result_free(r);
+        const char *in = "# A\n\n\"q\" *b*\n";
+        const char *args[] = {"-t", "latex", "-s", "-M", "title=*T*", "-V", "documentclass=book",
+                              "--toc", "--wrap=none", "-f", "markdown-smart", "--number-sections"};
+        pandoc_result *a = pandoc_convert_args(12, args, in, strlen(in));
+        r = opt ? pandoc_convert(opt, strlen(opt), in, strlen(in)) : NULL;
+        check(a && r && a->status == 0 && r->status == 0 && a->output_len == r->output_len
+              && memcmp(a->output, r->output, a->output_len) == 0
+              && strstr(r->output, "{book}") && strstr(r->output, "\\title{*T*}")
+              && strstr(r->output, "``q''") == NULL,
+              "opt: the conversion of the command line");
+        pandoc_result_free(a);
+        pandoc_result_free(r);
+        /* the other keys apply on top, as a defaults file's; callbacks too */
+        if (opt) {
+            char *more = malloc(strlen(opt) + 128);
+            sprintf(more, "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 0}], %s",
+                    opt + 1);
+            pandoc_filter sf[] = {{shout, NULL}};
+            r = pandoc_convert_filters(more, strlen(more), "hello world", 11, sf, 1);
+            check(r && r->status == 0 && strstr(r->output, "<title>*T*</title>")
+                  && strstr(r->output, "hello WORLD"), "opt: with other keys and a callback");
+            pandoc_result_free(r);
+            free(more);
+        }
+        free(opt);
+        const char *bad = "{\"opt\": {\"to\": \"html\", \"nonsense\": 1}}";
+        r = pandoc_convert(bad, strlen(bad), "x", 1);
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+              && strstr(r->error_message, "nonsense"), "opt: an unknown key is an error");
+        pandoc_result_free(r);
+        const char *u = "{\"opt\": {\"to\": \"html\"}, \"untrusted\": true}";
+        r = pandoc_convert(u, strlen(u), "x", 1);
+        check(r && r->status != 0 && strstr(r->error_message, "not allowed for untrusted code"),
+              "opt: not for untrusted code");
+        pandoc_result_free(r);
+    }
+
     /* threads */
     {
         const char *nq = "{\"query\": \"num-threads\"}";

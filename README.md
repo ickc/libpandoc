@@ -45,7 +45,7 @@ fast as 32 or faster: set it to the number of physical cores for
 throughput.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.8 now; the embedded pandoc's version and its
+are this C interface's own, 1.9 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 
@@ -56,6 +56,24 @@ side uses only what upstream's own `pandoc.wasm` uses (`Opt`'s JSON
 decoder, `defaultOpts`, `convertWithOpts`, the Lua engine), plus
 `parseOptionsFromArgs`, so upstream keeps it working. Callback filters add
 one more public interface: the Lua engine's `engineApplyFilter`.
+
+### A command line through the library
+
+`{"query": "parse-args", "args": [...]}` answers with what pandoc makes of
+a command line, defaults files applied: the filters it would run and, in
+`"options"` (1.9), all of its options, in pandoc's own JSON of them.
+`pandoc_convert` takes those back as `{"opt": options}`, the conversion
+starting from them instead of pandoc's defaults (other keys apply on top,
+as a defaults file's). So a host that must look at or change what a
+command line names (input and output files, templates, filters) parses it,
+changes the options, and converts through the one library call: the same
+conversion as `pandoc_main` with those arguments, output and messages
+returned as `pandoc_convert` returns them. Of 61 command lines covering
+every kind of option (pandoc 3.14), 58 gave the same output, files,
+messages and exit status as `pandoc_main`; the others were `--verbose`
+(pandoc reports which filters run only when it prints it), `--dump-args`
+(which exits the process) and `--version` (informational options are no
+conversion, and get no `"options"`).
 
 ### Untrusted input
 

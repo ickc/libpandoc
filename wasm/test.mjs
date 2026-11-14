@@ -138,3 +138,15 @@ test("another instance from this one's compiled module; StoppedError exported", 
   assert.ok(new StoppedError("x") instanceof Error);
   assert.equal(new StoppedError("x").name, "StoppedError");
 });
+
+test("a command line through the library path: parse-args's options as \"opt\"", () => {
+  const args = ["-f", "markdown-smart", "-t", "latex", "-s", "-M", "title=*T*", "-V", "documentclass=book", "--toc"];
+  const { filters, options } = pandoc.query({ query: "parse-args", args });
+  assert.deepEqual(filters, []);
+  assert.equal(options.variables.documentclass, "book");
+  const [status, out] = pandoc.abi.convertArgs(args, '"q" *b*');
+  assert.equal(status, 0);
+  assert.equal(pandoc.convert({ opt: options }, '"q" *b*'), new TextDecoder().decode(out));
+  assert.throws(() => pandoc.convert({ opt: { ...options, nonsense: 1 } }, "x"),
+                (e) => e.kind === "PandocOptionError" && /nonsense/.test(e.message));
+});

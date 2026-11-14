@@ -42,7 +42,8 @@ common deps
 library
   import:           deps
   hs-source-dirs:   src
-  exposed-modules:  LibPandoc.Query
+  exposed-modules:  LibPandoc.Options
+                    LibPandoc.Query
                     LibPandoc.Result
                     LibPandoc.Untrusted
 

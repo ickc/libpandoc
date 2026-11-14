@@ -107,6 +107,7 @@ import Text.Pandoc.Scripting (ScriptingEngine (..))
 import qualified Text.Pandoc.UTF8 as UTF8
 import Text.Pandoc.Version (pandocVersionText)
 
+import LibPandoc.Options (fromOptJSON, toOptJSON)
 import LibPandoc.Query (query)
 import LibPandoc.Untrusted (Call (..), untrusted, untrustedQuery)
 import LibPandoc.Result
@@ -156,13 +157,25 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
         -- untrusted code doesn't read the process's stdin
         when (isUntrusted v0 && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
-        v <- untrusted Convert v0
-        v' <- callbackFilters (fromIntegral nFilters) v
-        Aeson.parseEither Aeson.parseJSON v'
+        decodeOptions (fromIntegral nFilters) =<< untrusted Convert v0
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (f :: Opt -> Opt) ->
-      convert (withHooks filters (fromIntegral nFilters)) (f defaultOpts) input
+    Right opts -> convert (withHooks filters (fromIntegral nFilters)) opts input
+
+-- | pandoc_convert's options: a defaults file's keys, applied to pandoc's
+-- defaults, or to @"opt"@ if there is one: pandoc's JSON of a whole 'Opt',
+-- as @parse-args@ gives it ("LibPandoc.Options"). Callback filters in
+-- either.
+decodeOptions :: Int -> Aeson.Value -> Either String Opt
+decodeOptions n v = do
+  v' <- callbackFilters n v
+  (base, rest) <- case v' of
+    Aeson.Object o | Just b <- KM.lookup "opt" o -> do
+      opts <- fromOptJSON =<< callbackFilters n b
+      pure (opts, Aeson.Object (KM.delete "opt" o))
+    _ -> pure (defaultOpts, v')
+  f <- Aeson.parseEither Aeson.parseJSON rest
+  pure (f base)
 
 -- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
 isUntrusted :: Aeson.Value -> Bool
@@ -530,7 +543,9 @@ threadsExpanded = unsafePerformIO (newIORef False)
 
 -- | @{"query": "parse-args", "args": [...]}@: what pandoc makes of these
 -- command-line arguments (defaults files included): the filters it would
--- run, or that they ask for information (@--version@, @--list-*@, ...).
+-- run and all of its options (pandoc's JSON of them, which
+-- @pandoc_convert@ takes back as @"opt"@), or that they ask for
+-- information (@--version@, @--list-*@, ...).
 parseArgsQuery :: Aeson.Object -> IO B.ByteString
 parseArgsQuery o = do
   args <- case KM.lookup "args" o of
@@ -544,8 +559,8 @@ parseArgs :: [String] -> IO B.ByteString
 parseArgs args = do
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
-    Right opts -> pure $ BL.toStrict $ Aeson.encode $
-      Aeson.object [ "filters" .= optFilters opts ]
+    Right opts -> pure $ BL.toStrict $ Aeson.encode $ Aeson.object $
+      ("filters" .= optFilters opts) : [ "options" .= o | Just o <- [toOptJSON opts] ]
     Left (OptError e) -> throwIO e
     Left info -> pure $ BL.toStrict $ Aeson.encode $
       Aeson.object [ "informational" .= takeWhile (/= ' ') (show info) ]
