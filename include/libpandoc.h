@@ -42,7 +42,8 @@ extern "C" {
  * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
  * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
  * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
- * citeproc, and "untrusted" allows it). The pandoc inside has
+ * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
+ * called from several threads at once). The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
@@ -72,7 +73,12 @@ typedef struct pandoc_result {
  * parallel: by default one per logical core the process may use, or
  * LIBPANDOC_NUM_THREADS (read when the runtime starts, as OMP_NUM_THREADS).
  * pandoc_set_num_threads changes it from now on (n >= 1) and returns the
- * new number; {"query": "num-threads"} tells the current one. */
+ * new number; {"query": "num-threads"} tells the current one. It may be
+ * called from any thread, also from several at once (from 1.8; before,
+ * that could crash or hang GHC's runtime): the calls take turns, and the
+ * last one decides the number. More threads than processors, changed
+ * while conversions run, have been seen to crash GHC's garbage collector
+ * (a GHC bug): stay at or below the number of processors. */
 LIBPANDOC_API int pandoc_set_num_threads(int n);
 
 /* Start the Haskell runtime. Safe to call more than once and from any

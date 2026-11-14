@@ -37,8 +37,11 @@ core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
 (threads beyond the first start when first used in parallel, so a program
 converting one document doesn't pay for them)
 (like `OMP_NUM_THREADS`); `pandoc_set_num_threads` changes
-it at run time. On a 16-core, 32-thread CPU, 16 threads were as fast as 32
-or faster: set it to the number of physical cores for throughput.
+it at run time, from any thread, also from several at once (they take
+turns). On a 16-core, 32-thread CPU, 16 threads were as fast as 32
+or faster: set it to the number of physical cores for throughput. More
+threads than processors, changed while conversions run, have been seen to
+crash GHC's garbage collector.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
 are this C interface's own, 1.8 now; the embedded pandoc's version and its

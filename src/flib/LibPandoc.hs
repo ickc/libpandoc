@@ -43,7 +43,7 @@ import Control.Exception (SomeException, bracket, fromException, displayExceptio
 import Control.Concurrent (forkIO, rtsSupportsBoundThreads, setNumCapabilities)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.Except (throwError)
@@ -469,7 +469,7 @@ hsQuery ptr len = respond $ do
 -- | @pandoc_set_num_threads@: the number of capabilities, from now on
 -- (at least 1); returns the new number.
 hsSetNumThreads :: CInt -> IO CInt
-hsSetNumThreads n = do
+hsSetNumThreads n = withMVar capabilitiesLock $ \() -> do
   let n' = max 1 (fromIntegral n)
   writeIORef threadsSet (Just n')
   expanded <- readIORef threadsExpanded
@@ -480,10 +480,22 @@ hsSetNumThreads n = do
 -- used in parallel: by 'readMany' with more than one text, or a second
 -- caller while one call runs (not a call from inside it, by a filter).
 hsExpandThreads :: IO ()
-hsExpandThreads = do
+hsExpandThreads = withMVar capabilitiesLock $ \() -> do
   done <- atomicModifyIORef' threadsExpanded (\d -> (True, d))
   -- (not in the non-threaded runtime, which has one: wasm)
   unless (done || not rtsSupportsBoundThreads) $ setNumCapabilities =<< numThreads
+
+-- | Held around the whole of 'hsSetNumThreads' and 'hsExpandThreads', so
+-- that one changes the number of capabilities at a time and the last
+-- request is the number in the end. GHC's 'setNumCapabilities' reads the
+-- number of capabilities before it takes its own lock, so a call made
+-- while another adds capabilities releases too few of them: the runtime
+-- hangs or crashes (GHC 9.10.3, and its master in 2026-11; UPSTREAM.md in
+-- the project). Neither body calls back into the host or takes the lock
+-- again.
+capabilitiesLock :: MVar ()
+capabilitiesLock = unsafePerformIO (newMVar ())
+{-# NOINLINE capabilitiesLock #-}
 
 -- | The number of capabilities to use: as set, else
 -- @LIBPANDOC_NUM_THREADS@, else one per processor this process may use.
