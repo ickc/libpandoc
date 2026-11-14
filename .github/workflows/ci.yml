@@ -102,7 +102,7 @@ jobs:
       - name: Smoke test (C, musl)
         if: matrix.image == 'musllinux_1_2'
         run: |
-          docker run --rm -v "$PWD:/work" -w /work alpine:3.22 sh -c '
+          docker run --rm -v "$PWD:/work" -w /work alpine:3.24 sh -c '
             apk add -q gcc musl-dev gmp zlib libffi libstdc++ &&
             cc -Wall -o dist/smoke test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" &&
             dist/smoke dist/share/libpandoc/api-version.json && rm dist/smoke'
@@ -194,7 +194,7 @@ jobs:
         run: |
           source ~/.ghc-wasm/env
           mkdir -p "$RUNNER_TEMP/pyodide" && cd "$RUNNER_TEMP/pyodide"
-          npm init -y >/dev/null && npm install pyodide@314.0.7
+          npm init -y >/dev/null && npm install pyodide@314.0.8
           python3 -m pip wheel --no-deps -w wheels "panir @ git+https://github.com/ickc/panir#subdirectory=python"
           cd "$GITHUB_WORKSPACE"
           PYODIDE="$RUNNER_TEMP/pyodide" PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) node wasm/test-pyodide.mjs
