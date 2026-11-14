@@ -41,11 +41,14 @@ extern "C" {
  * something below changes incompatibly; MINOR when something is added
  * (1.1: callback filters; 1.2: pandoc_read_many; 1.3: pandoc_main;
  * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
- * pandoc_read_many's "sandbox"; 1.7: "untrusted"). The pandoc inside has
+ * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
+ * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
+ * called from several threads at once and is clamped to the processors).
+ * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 7
+#define LIBPANDOC_ABI_VERSION_MINOR 8
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -70,8 +73,13 @@ typedef struct pandoc_result {
  * that calls from different host threads, and pandoc_read_many, run in
  * parallel: by default one per logical core the process may use, or
  * LIBPANDOC_NUM_THREADS (read when the runtime starts, as OMP_NUM_THREADS).
- * pandoc_set_num_threads changes it from now on (n >= 1) and returns the
- * new number; {"query": "num-threads"} tells the current one. */
+ * pandoc_set_num_threads changes it from now on and returns the new number:
+ * n, but at least 1 and at most one per processor the process may use
+ * (from 1.8, also for LIBPANDOC_NUM_THREADS: more help nobody, and changed
+ * while conversions run they crashed GHC's garbage collector). {"query":
+ * "num-threads"} tells the current one. It may be called from any thread,
+ * also from several at once (from 1.8; before, that could crash or hang
+ * GHC's runtime): the calls take turns, and the last one decides. */
 LIBPANDOC_API int pandoc_set_num_threads(int n);
 
 /* Start the Haskell runtime. Safe to call more than once and from any
@@ -107,9 +115,21 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * and those that only shape the output, such as "to", "standalone",
  * "toc", "html-math-method", "variables"), formats are names (not Lua
  * readers or writers, and not "pdf"), input must be given, and "sandbox"
- * is on. Anything else fails with a PandocOptionError naming it. A host
- * sets "untrusted": true on whatever such code passes (replacing its own
- * "untrusted"), and the list lives here, the same for every host. */
+ * is on. "citeproc" is allowed (from 1.8), sandboxed as below, but not
+ * the options naming its files ("bibliography", "csl",
+ * "citation-abbreviations"): references in the document's metadata work.
+ * Anything else fails with a PandocOptionError naming it. A host sets
+ * "untrusted": true on whatever such code passes (replacing its own
+ * "untrusted"), and the list lives here, the same for every host.
+ *
+ * "sandbox": true is pandoc's --sandbox (readers and writers read only the
+ * files the options name, and fetch nothing), and more (from 1.8):
+ * citeproc runs in the sandbox too, which pandoc doesn't do. It reads only
+ * the "bibliography", "csl" and "citation-abbreviations" files the options
+ * name, never one the document names (its metadata, LaTeX's
+ * \bibliography), nor one named as metadata ("metadata", metadata files,
+ * filters), nor the data directory's styles; any other file or URL is
+ * missing, with the message a missing file gets, and nothing is fetched. */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 

@@ -37,11 +37,15 @@ core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
 (threads beyond the first start when first used in parallel, so a program
 converting one document doesn't pay for them)
 (like `OMP_NUM_THREADS`); `pandoc_set_num_threads` changes
-it at run time. On a 16-core, 32-thread CPU, 16 threads were as fast as 32
-or faster: set it to the number of physical cores for throughput.
+it at run time, from any thread, also from several at once (they take
+turns). Either way, never more than one per logical core the process may
+use: more help nobody, and changed while conversions run they crashed
+GHC's garbage collector. On a 16-core, 32-thread CPU, 16 threads were as
+fast as 32 or faster: set it to the number of physical cores for
+throughput.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.7 now; the embedded pandoc's version and its
+are this C interface's own, 1.8 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 
@@ -63,12 +67,23 @@ nothing (the reading ones, and those that only shape the output: `to`,
 `standalone`, `toc`, `variables`, ...), formats by name (no Lua readers or
 writers, no `pdf`), input given rather than files, and pandoc's sandbox
 on. Anything else fails with a `PandocOptionError` naming it: filters,
-templates, `citeproc`, output files, `data-dir`, ... So only pandoc's own
-code runs, and it reads nothing but the input. Stricter than pandoc's
-`sandbox` alone, which leaves citeproc reading the bibliography, CSL and
-abbreviations files a document's own metadata names (`UPSTREAM.md` in the
-project). Wasm filters' calls to pandoc are always untrusted. The list is
+templates, output files, `data-dir`, `bibliography`, `csl`, ... So only
+pandoc's own code runs, and it reads nothing but the input. `citeproc` is
+allowed (1.8), sandboxed as below, with the references in the document's
+metadata. Wasm filters' calls to pandoc are always untrusted. The list is
 `src/LibPandoc/Untrusted.hs`.
+
+`"sandbox": true` alone is pandoc's `--sandbox`, plus citeproc (1.8):
+pandoc runs its readers and writers in a sandbox, reading only the files
+the options name, but runs citeproc outside it, so a document's metadata
+(or LaTeX's `\bibliography`) could make it read any bibliography, CSL
+style or abbreviations file, or fetch a URL (`UPSTREAM.md` in the
+project). libpandoc runs citeproc in pandoc's sandbox too, with the
+`bibliography`, `csl` and `citation-abbreviations` the options name: any
+other file is missing, with a missing file's message, and nothing is
+fetched. So a bibliography given as metadata (`-M`, a metadata file, a
+filter) isn't read either, nor the data directory's `csl/`; name them
+in those options.
 
 ### Filters in the caller's language
 

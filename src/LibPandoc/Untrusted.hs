@@ -7,8 +7,12 @@
 @"untrusted": true@: options (and queries) from code the host doesn't
 trust, such as a wasm filter calling pandoc. Only what reads no files,
 writes none, fetches nothing and runs no programs is accepted, and pandoc's
-sandbox is on. The one list every host shares (pandocrs, libpandoc.wasm's
-JavaScript, LibPandoc.jl), rather than a copy in each.
+sandbox is on. That includes citeproc, which libpandoc runs inside the
+sandbox too, with the files the options name; untrusted options name none
+(no @bibliography@, @csl@, @citation-abbreviations@), so only a document's
+own references, in its metadata, work. The one list every host shares
+(pandocrs, libpandoc.wasm's JavaScript, LibPandoc.jl), rather than a copy
+in each.
 -}
 module LibPandoc.Untrusted
   ( Call (..)
@@ -38,10 +42,12 @@ readOptions =
   , "track-changes", "sandbox" ]
 
 -- | With 'readOptions', for 'Convert'. Formats are names (not Lua
--- writers), and not @pdf@ (which runs a PDF engine).
+-- writers), and not @pdf@ (which runs a PDF engine). @citeproc@: in the
+-- sandbox (LibPandoc's @citeprocSandboxed@).
 writeOptions :: [T.Text]
 writeOptions =
-  [ "to", "writer", "ascii", "cite-method", "dpi", "email-obfuscation", "eol"
+  [ "to", "writer", "ascii", "citeproc", "cite-method", "dpi"
+  , "email-obfuscation", "eol"
   , "fail-if-warnings", "figure-caption-position", "html-math-method"
   , "html-q-tags", "identifier-prefix", "incremental", "list-tables"
   , "listings", "markdown-headings", "metadata", "number-offset"

@@ -103,8 +103,8 @@ test("timing", () => {
 
 test("untrusted: only options that read, write, fetch and run nothing, sandboxed", () => {
   assert.equal(pandoc.convert({ to: "html", untrusted: true }, "*hi*"), "<p><em>hi</em></p>\n");
-  for (const extra of [{ citeproc: true }, { filters: ["x.lua"] }, { "output-file": "/tmp/o" },
-                       { to: "pdf" }, { "data-dir": "/tmp" }]) {
+  for (const extra of [{ filters: ["x.lua"] }, { "output-file": "/tmp/o" }, { to: "pdf" },
+                       { "data-dir": "/tmp" }, { bibliography: ["/tmp/x.bib"] }, { csl: "/tmp/x.csl" }]) {
     assert.throws(() => pandoc.convert({ to: "html", untrusted: true, ...extra }, "x"),
                   (e) => e instanceof PandocError && /not allowed for untrusted code/.test(e.message));
   }
@@ -112,6 +112,23 @@ test("untrusted: only options that read, write, fetch and run nothing, sandboxed
   const tex = "\\input{/tmp/untrusted-secret.tex}";
   assert.match(pandoc.convert({ from: "latex", to: "plain" }, tex), /SECRET/);
   assert.doesNotMatch(pandoc.convert({ from: "latex", to: "plain", untrusted: true }, tex), /SECRET/);
+  // citeproc, with the document's own references
+  const refs = "---\nreferences: [{id: x, title: Inline Title, type: book}]\n---\n\n[@x]\n";
+  assert.match(pandoc.convert({ to: "plain", citeproc: true, untrusted: true }, refs), /Inline Title/);
+});
+
+test("sandbox: citeproc reads only the bibliography the options name", () => {
+  writeFileSync(join(pandoc.tmp, "sandbox-out.bib"), "@book{canary, title={CANARY}, year={2001}}\n");
+  writeFileSync(join(pandoc.tmp, "sandbox-own.bib"), "@book{mine, title={Own Title}, year={2002}}\n");
+  const doc = "---\nbibliography: /tmp/sandbox-out.bib\nnocite: \"@*\"\n---\n\nText.\n";
+  const opts = { to: "plain", citeproc: true };
+  assert.match(pandoc.convert(opts, doc), /CANARY/);
+  assert.throws(() => pandoc.convert({ ...opts, sandbox: true }, doc),
+                (e) => e.kind === "PandocResourceNotFound" && !/CANARY/.test(e.message));
+  assert.throws(() => pandoc.convert({ ...opts, untrusted: true }, doc),
+                (e) => e.kind === "PandocResourceNotFound" && !/CANARY/.test(e.message));
+  assert.match(pandoc.convert({ ...opts, sandbox: true, bibliography: ["/tmp/sandbox-own.bib"] }, "[@mine]"),
+               /Own Title/);
 });
 
 test("another instance from this one's compiled module; StoppedError exported", async () => {
