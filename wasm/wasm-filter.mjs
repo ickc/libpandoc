@@ -187,6 +187,8 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
   function run(doc, context) {
     const ctx = JSON.parse(fromUtf8.decode(context));
     const env = [`PANDOC_READER_OPTIONS=${JSON.stringify(ctx["reader-options"] ?? {})}`];
+    // (libpandoc 1.10)
+    if (ctx["writer-options"]) env.push(`PANDOC_WRITER_OPTIONS=${JSON.stringify(ctx["writer-options"])}`);
     if (pandocVersion) env.push(`PANDOC_VERSION=${pandocVersion}`);
     if (ctx["input-format"]) env.push(`PANDOC_INPUT_FORMAT=${ctx["input-format"]}`);
     if (ctx["output-format"]) env.push(`PANDOC_OUTPUT_FORMAT=${ctx["output-format"]}`);

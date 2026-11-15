@@ -1,7 +1,9 @@
 // node --test wasm/test.mjs (after scripts/build-wasm.sh)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync,
+         writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { load as loadInMemory } from "./browser.mjs";
@@ -204,4 +206,86 @@ test("close: the instance's directory is removed, and later calls are StoppedErr
     console.log(p.tmp);`], { encoding: "utf8" });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(existsSync(child.stdout.trim()), false);
+});
+
+test("a filter's answer that isn't bytes or a string is an error of that conversion", () => {
+  const raw = (answer) => Object.assign(() => answer, { bytes: true });
+  const doc = (d) => d;
+  for (const [fn, message] of [
+    [raw(undefined), /bytes or a string, not undefined/],
+    [raw(42), /bytes or a string, not number/],
+    [raw({ blocks: [] }), /bytes or a string, not object/],
+    [raw(Promise.resolve("{}")), /Promise: filters run synchronously/],
+    [() => undefined, /no document \(a missing return\?\)/],
+    [async (d) => d, /Promise: filters run synchronously/],
+    [() => { throw Symbol("odd"); }, /Symbol\(odd\)/],
+  ]) {
+    assert.throws(() => pandoc.convertWithFilters({ to: "html" }, "x", [fn]),
+                  (e) => e instanceof PandocError && e.kind === "PandocFilterError" && message.test(e.message));
+  }
+  // the instance goes on, and its files are gone
+  assert.equal(pandoc.convertWithFilters({ to: "html" }, "*x*", [doc]), "<p><em>x</em></p>\n");
+  assert.deepEqual(readdirSync(pandoc.tmp).filter((n) => n.startsWith("libpandoc")), []);
+});
+
+test("arguments of the wrong type are refused before the call; the instance goes on", () => {
+  for (const f of [() => pandoc.abi.convert("{}", 42), () => pandoc.abi.convert({}, "x"),
+                   () => pandoc.abi.convertArgs("-t html", "x"), () => pandoc.abi.convertArgs(["-t", 1], "x"),
+                   () => pandoc.abi.convertArgs(["-t", "ht\0ml"], "x"), () => pandoc.chdir("/tmp\0/x"),
+                   () => pandoc.abi.convertFilters("{}", "x", "not an array")]) {
+    assert.throws(f, (e) => e instanceof TypeError && !(e instanceof StoppedError));
+  }
+  // bytes in any view
+  assert.equal(pandoc.convert({ to: "html" }, new TextEncoder().encode("*a*").buffer), "<p><em>a</em></p>\n");
+  assert.equal(pandoc.convert({ to: "html" }, new DataView(new TextEncoder().encode("*b*").buffer)),
+               "<p><em>b</em></p>\n");
+});
+
+test("an exception thrown through a call stops the instance: a StoppedError, now and later", async () => {
+  // a Lua filter's os.exit: WASI's proc_exit, as when the runtime runs out of memory
+  const exits = await load(pandoc.module);
+  writeFileSync(join(exits.tmp, "exit.lua"), "os.exit(3)");
+  assert.throws(() => exits.convert({ to: "html", filters: ["/tmp/exit.lua"] }, "x"), StoppedError);
+  assert.throws(() => exits.convert({ to: "html" }, "x"), (e) => e instanceof StoppedError && /exited/.test(e.message));
+  // so too from a call a filter makes: the outer call stops, it doesn't go on
+  const nested = await load(pandoc.module);
+  writeFileSync(join(nested.tmp, "exit.lua"), "os.exit(3)");
+  const calls = (d) => { nested.convert({ to: "html", filters: ["/tmp/exit.lua"] }, "inner"); return d; };
+  assert.throws(() => nested.convertWithFilters({ to: "html" }, "outer", [calls]), StoppedError);
+  assert.throws(() => nested.query({ query: "version" }), StoppedError);
+  exits.close();
+  nested.close();
+});
+
+test("a document reaches only the directories given: not through .., nor by an absolute path", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "libpandoc-wasm-test-"));
+  try {
+    writeFileSync(join(outside, "canary.tex"), "CANARY");
+    mkdirSync(join(outside, "work"));
+    writeFileSync(join(outside, "work", "in.tex"), "INSIDE");
+    symlinkSync(join(outside, "canary.tex"), join(outside, "work", "link.tex"));
+    const mem = await loadInMemory(pandoc.module, { files: { "/tmp/in.tex": "INSIDE" } });
+    const node = await load(pandoc.module, { preopens: { "/work": join(outside, "work") } });
+    const read = (p, path) => {
+      try {
+        return p.convert({ from: "latex", to: "plain", "input-files": [path] });
+      } catch (e) {
+        return e.message;
+      }
+    };
+    assert.match(read(node, "/work/in.tex"), /INSIDE/);
+    assert.match(read(mem, "/tmp/in.tex"), /INSIDE/);
+    for (const p of [node, mem]) {
+      for (const path of ["/work/../canary.tex", "/tmp/../" + outside.slice(1) + "/canary.tex",
+                          join(outside, "canary.tex"), "/work/link.tex"]) {
+        assert.doesNotMatch(read(p, path), /CANARY/, path);
+      }
+      // nor through LaTeX's \input
+      assert.doesNotMatch(p.convert({ from: "latex", to: "plain" }, "\\input{/work/../canary.tex}"), /CANARY/);
+    }
+    node.close();
+    mem.close();
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
 });

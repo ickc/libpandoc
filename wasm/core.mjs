@@ -10,6 +10,28 @@
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder("utf-8", { fatal: true });
+// pandoc's messages: text, but not to fail on if a byte isn't
+const lenientUtf8 = new TextDecoder("utf-8");
+
+// A value given to a call that isn't bytes or a string (or a string with a
+// NUL where C reads up to it), refused before anything enters wasm: the
+// instance goes on.
+class InputError extends TypeError {}
+
+// bytes of a string, a Uint8Array, an ArrayBuffer or another view of one
+function toBytes(x, what) {
+  if (typeof x === "string") return utf8.encode(x);
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof ArrayBuffer) return new Uint8Array(x);
+  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+  throw new InputError(`${what}: bytes or a string, not ${x === null ? "null" : typeof x}`);
+}
+// a C string: no NUL inside
+function cBytes(s, what) {
+  if (typeof s !== "string") throw new InputError(`${what}: a string, not ${typeof s}`);
+  if (s.includes("\0")) throw new InputError(`${what}: a string without NUL`);
+  return utf8.encode(s + "\0");
+}
 
 export class PandocError extends Error {
   constructor(kind, message) {
@@ -39,20 +61,44 @@ export async function start(module, wasi) {
   // returning bytes (the document, and the context, as pandoc's JSON)
   const filters = [];
   let ex; // the instance's exports
+  let stopped = null; // why the instance stopped (below)
   const imports = {
     ...wasi.imports,
     libpandoc: {
-      // int filter(void *userdata, doc, doc_len, context, context_len, out)
+      // int filter(void *userdata, doc, doc_len, context, context_len, out).
+      // Nothing may be thrown from here through the conversion's wasm
+      // frames, which would leave it unfinished (its temporary files, its
+      // memory) and the runtime in no known state: whatever the filter does,
+      // the conversion gets an answer, a document or an error message.
+      // Unless the instance stopped meanwhile (a call the filter made ran
+      // out of memory): then that goes on up.
       filter(k, doc, docLen, ctx, ctxLen, out) {
         let status = 0, answer;
         try {
           answer = filters[k](copy(doc, docLen), copy(ctx, ctxLen));
+          if (typeof answer?.then === "function")
+            throw new Error("the filter returned a Promise: filters run synchronously");
+          answer = toBytes(answer, "the filter's answer");
         } catch (e) {
           status = 1;
-          answer = utf8.encode(String(e?.message ?? e));
+          let message;
+          try {
+            message = String(e?.message ?? e);
+          } catch {
+            message = "the filter failed";
+          }
+          answer = utf8.encode(message);
         }
-        const [p, n] = alloc(answer);
-        ex.pandoc_buffer_set(out, p, n);
+        if (stopped) throw new StoppedError(stopped);
+        let p = ex.malloc(Math.max(answer.length, 1));
+        if (p === 0) {
+          status = 1;
+          answer = utf8.encode(`the filter's answer (${answer.length} bytes) doesn't fit in libpandoc.wasm's memory`);
+          p = ex.malloc(answer.length);
+          if (p === 0) return 1; // an error without a message
+        }
+        mem().set(answer, p);
+        ex.pandoc_buffer_set(out, p, answer.length);
         ex.free(p);
         return status;
       },
@@ -69,14 +115,14 @@ export async function start(module, wasi) {
   function cstring(p) {
     if (p === 0) return null;
     const m = mem();
-    let end = p;
-    while (m[end] !== 0) end++;
-    return fromUtf8.decode(m.subarray(p, end));
+    const end = m.indexOf(0, p);
+    if (end < 0) throw new Error("libpandoc.wasm: a string without its end");
+    return lenientUtf8.decode(m.subarray(p, end));
   }
-  // a malloc'd copy of bytes or a string; the caller frees it
-  function alloc(s) {
-    const b = typeof s === "string" ? utf8.encode(s) : s;
+  // a malloc'd copy of bytes; the caller frees it
+  function alloc(b) {
     const p = ex.malloc(Math.max(b.length, 1));
+    if (p === 0) throw new InputError(`libpandoc.wasm: no memory for ${b.length} bytes`);
     mem().set(b, p);
     return [p, b.length];
   }
@@ -95,59 +141,65 @@ export async function start(module, wasi) {
     ex.pandoc_result_free(r);
     return res;
   }
-  // run f with each of `values` malloc'd (null stays NULL), then free them
+  // run f with each of `values` (bytes or strings) malloc'd (null stays
+  // NULL), then free them
   function withAlloc(values, f) {
-    const ptrs = values.map((x) => (x == null ? [0, 0] : alloc(x)));
+    const bytes = values.map((x, i) => (x == null ? null : toBytes(x, `argument ${i + 1}`)));
+    const ptrs = [];
     try {
+      for (const b of bytes) ptrs.push(b === null ? [0, 0] : alloc(b));
       return f(...ptrs);
     } finally {
       for (const [p] of ptrs) if (p) ex.free(p);
     }
   }
+  // argv: a C array of C strings
   function withArgv(args, f) {
-    const ptrs = args.map((a) => alloc(utf8.encode(a + "\0"))[0]);
-    const argv = ex.malloc(4 * Math.max(args.length, 1));
-    ptrs.forEach((p, i) => view().setUint32(argv + 4 * i, p, true));
-    try {
+    if (!Array.isArray(args)) throw new InputError("arguments: an array of strings");
+    const bytes = args.map((a, i) => cBytes(a, `argument ${i + 1}`));
+    return withAlloc([...bytes, new Uint8Array(4 * bytes.length)], (...ptrs) => {
+      const argv = ptrs.pop()[0];
+      ptrs.forEach(([p], i) => view().setUint32(argv + 4 * i, p, true));
       return f(args.length, argv);
-    } finally {
-      ptrs.forEach((p) => ex.free(p));
-      ex.free(argv);
-    }
+    });
   }
   // pandoc_filter[]: {fn = NULL, userdata = base + i}: pandoc's filter i is
   // filters[base + i]. A filter may itself convert with filters: its own
   // come after.
   function withFilters(fns, f) {
+    if (!Array.isArray(fns)) throw new InputError("filters: an array of functions");
     const base = filters.length;
-    filters.push(...fns);
-    const arr = ex.malloc(8 * Math.max(fns.length, 1));
-    fns.forEach((_, i) => {
-      view().setUint32(arr + 8 * i, 0, true);
-      view().setUint32(arr + 8 * i + 4, base + i, true);
+    const arr = new Uint8Array(8 * fns.length);
+    fns.forEach((_, i) => new DataView(arr.buffer).setUint32(8 * i + 4, base + i, true));
+    return withAlloc([arr], ([p]) => {
+      filters.push(...fns);
+      try {
+        return f(p, fns.length);
+      } finally {
+        filters.length = base;
+      }
     });
-    try {
-      return f(arr, fns.length);
-    } finally {
-      ex.free(arr);
-      filters.length = base;
-    }
   }
 
-  // The Haskell runtime exiting (out of memory: WASI's proc_exit, which
-  // node:wasi throws as a symbol, browser_wasi_shim as a WASIProcExit) or
-  // trapping leaves the instance unusable: say so as a StoppedError, now
-  // and on every later call, rather than throwing a bare value.
-  let stopped = null;
+  // An exception out of a call leaves the instance unusable: the Haskell
+  // runtime exiting (out of memory: WASI's proc_exit, which node:wasi
+  // throws as a symbol, browser_wasi_shim as a WASIProcExit), the module
+  // trapping, or anything else thrown through its frames (a WASI shim's
+  // own error). Say so as a StoppedError, now and on every later call,
+  // rather than throwing a bare value. Not a call refused before it
+  // entered wasm (InputError). (Also after close().)
   const guard = (f) => (...args) => {
     if (stopped) throw new StoppedError(stopped);
     try {
       return f(...args);
     } catch (e) {
+      if (e instanceof InputError) throw e;
+      if (e instanceof StoppedError && stopped) throw e;
       const exited = typeof e === "symbol" || e?.constructor?.name === "WASIProcExit";
-      if (!exited && !(e instanceof WebAssembly.RuntimeError)) throw e;
-      stopped = `libpandoc.wasm stopped (${exited ? "its runtime exited" : e.message}), ` +
-        "most likely out of memory (wasm32's 4 GiB): load it again";
+      const why = exited ? "its runtime exited, most likely out of memory (wasm32's 4 GiB)"
+        : e instanceof WebAssembly.RuntimeError ? `${e.message}, most likely out of memory (wasm32's 4 GiB)`
+        : `${e?.message ?? String(e)}, in the middle of a call`;
+      stopped = `libpandoc.wasm stopped (${why}): load it again`;
       throw new StoppedError(stopped, { cause: e });
     }
   };
@@ -174,7 +226,7 @@ export async function start(module, wasi) {
     // relative paths resolve: 0, or -1 if there is no such directory (or
     // the module predates the export)
     chdir: (path) =>
-      ex.chdir ? withAlloc([utf8.encode(path + "\0")], ([p]) => ex.chdir(p)) : -1,
+      ex.chdir ? withAlloc([cBytes(path, "chdir")], ([p]) => ex.chdir(p)) : -1,
   };
   for (const k of Object.keys(abi)) abi[k] = guard(abi[k]);
 
@@ -216,7 +268,13 @@ export async function start(module, wasi) {
       // a function marked `bytes` (a wasm filter) takes and returns bytes
       const wrapped = fns.map((fn) => fn.bytes ? fn : raw
         ? (doc, ctx) => fn(str(doc), str(ctx))
-        : (doc, ctx) => JSON.stringify(fn(JSON.parse(str(doc)), JSON.parse(str(ctx)))));
+        : (doc, ctx) => {
+          const out = fn(JSON.parse(str(doc)), JSON.parse(str(ctx)));
+          if (out === undefined) throw new Error("the filter returned no document (a missing return?)");
+          if (typeof out?.then === "function")
+            throw new Error("the filter returned a Promise: filters run synchronously");
+          return JSON.stringify(out);
+        });
       const { output } = ok(abi.convertFilters(JSON.stringify(opts), input, wrapped));
       return bytes ? output : str(output);
     },

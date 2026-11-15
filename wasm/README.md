@@ -55,7 +55,20 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   text ones), `query`, `readMany`. `wasm/node.mjs` runs it with `node:wasi`
   (real directories preopened), `wasm/browser.mjs` with
   `@bjorn3/browser_wasi_shim` (`/tmp` in memory, or any directories given;
-  run it in a Worker).
+  run it in a Worker). Calls are synchronous, one at a time per instance;
+  a filter may call the same instance again (nested, not concurrent).
+- **What a document reaches:** only the directories the host gives the
+  module. A path leaving them through `..` or an absolute path elsewhere
+  is refused by all three shims (tested in Node for `node:wasi` and the
+  in-memory one; `emscripten-fs.mjs` read, not run), and `node:wasi`
+  refuses a symbolic link to a file outside. But it follows a symbolic
+  link to a *directory* wherever it points, for reading and writing
+  (`/work/link/secret` with `link -> /etc`): Node documents it as no
+  sandbox. So with `node.mjs`, give a document you don't trust only
+  directories without such links, or use wasmtime (libpandoc-rs's directory
+  sandbox), which refuses them. The in-memory shim has no links;
+  `emscripten-fs.mjs` follows the links of the Emscripten filesystem, all
+  of which `pyodide.mjs` gives pandoc anyway.
 - **Memory:** wasm32 has 4 GiB of linear memory at most. The runtime has
   a heap limit (`-M3584m`), with which GHC compacts instead of copying its
   oldest generation: about 80 MB of markdown still converts (to HTML, in
@@ -112,11 +125,17 @@ An instance of libpandoc.wasm (what one `load()` returns) can stop for
 good in the middle of a call. What happens:
 
 - **When:** GHC's runtime runs out of memory (wasm32 has 4 GiB; about
-  80 MB of markdown still converts, a bigger document won't), or the module
-  traps (a `WebAssembly.RuntimeError`, such as a stack overflow). Normal
-  failures are not this: a document pandoc can't read, a bad option, a JS
-  or wasm filter that throws or traps all come back as a `PandocError`, and
-  the instance goes on.
+  80 MB of markdown still converts, a bigger document won't) or exits (a
+  Lua filter's `os.exit`), the module traps (a `WebAssembly.RuntimeError`,
+  such as a stack overflow), or anything else is thrown through the
+  module's frames in the middle of a call (a WASI shim's own error), also
+  in a call a filter makes from inside another: the outer one stops too.
+  Normal failures are not this: a document pandoc can't read, a bad
+  option, a JS or wasm filter that throws or traps, or answers with
+  something other than bytes or a string (`undefined`, a `Promise`: filters
+  run synchronously) all come back as a `PandocError`, and the instance
+  goes on; arguments of the wrong type are a `TypeError` before the call
+  starts. `close()` stops an instance too.
 - **Why for good:** out of memory, the runtime calls `exit` (WASI's
   `proc_exit`), which the host throws as an exception through the running
   conversion. The runtime is left with its heap full and a conversion half
