@@ -38,8 +38,8 @@ answers itself:
 module LibPandoc () where
 
 import qualified Control.Exception as E
-import Control.Exception (SomeException, bracket, fromException, displayException,
-                          throwIO, try)
+import Control.Exception (SomeException (..), bracket, evaluate, fromException,
+                          displayException, throwIO, try)
 import Control.Concurrent (forkIO, rtsSupportsBoundThreads, setNumCapabilities)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
@@ -66,17 +66,18 @@ import Foreign
 import Foreign.C
 import GHC.Generics
 import qualified GHC.Foreign as GHC
-import GHC.IO.Encoding (utf8)
+import GHC.IO.Encoding (TextEncoding, getFileSystemEncoding, utf8)
 import System.Directory (doesFileExist, executable, findExecutable, getPermissions)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO (hClose, hFlush, hPutStrLn, stderr, stdout)
+import System.IO.Error (ioeGetHandle, isResourceVanishedError)
 import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
 import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts, handleOptInfo,
                         defaultOpts,
-                        options, parseOptionsFromArgs)
+                        options, parseOptionsFromArgs, versionInfo)
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Citeproc (processCitations)
@@ -443,7 +444,7 @@ readMany opts inputs = do
     readWith (TextReader r) ro t = r ro t
     readWith (ByteStringReader r) ro t = r ro (BL.fromStrict (TE.encodeUtf8 t))
     toPandocError :: SomeException -> PandocError
-    toPandocError e = fromMaybe (PandocSomeError (T.pack (displayException e))) (fromException e)
+    toPandocError e = fromMaybe (PandocSomeError (T.pack (message e))) (fromException e)
     errorValue :: PandocError -> Aeson.Value
     errorValue e = Aeson.object
       [ "error" .= Aeson.object [ "kind" .= conNameOf e, "message" .= renderError e ] ]
@@ -477,7 +478,7 @@ hsQuery ptr len = respond $ do
 -- which the growth doesn't change: several first conversions at once in
 -- a fresh process.) dev/libpandoc-review and its sequel in the project.
 hsSetNumThreads :: CInt -> IO CInt
-hsSetNumThreads n = withMVar capabilitiesLock $ \() -> do
+hsSetNumThreads n = handleAll (const (pure 0)) $ withMVar capabilitiesLock $ \() -> do
   expanded <- readIORef threadsExpanded
   fromIntegral <$> if expanded then numThreads else do
     n' <- withinProcessors (fromIntegral n)
@@ -489,7 +490,7 @@ hsSetNumThreads n = withMVar capabilitiesLock $ \() -> do
 -- second caller while one call runs (not a call from inside it, by a
 -- filter). The number is then fixed: 'numThreads' answers it from now on.
 hsExpandThreads :: IO ()
-hsExpandThreads = withMVar capabilitiesLock $ \() -> do
+hsExpandThreads = handleAll (const (pure ())) $ withMVar capabilitiesLock $ \() -> do
   done <- readIORef threadsExpanded
   unless done $ do
     n <- numThreads
@@ -568,53 +569,89 @@ parseArgs args = do
 -- main (parseOptionsFromArgs, then handleOptInfo or convertWithOpts, errors
 -- through handleError), with its exit as the returned status rather than
 -- the process's. @filters@ (JSON), if given, replaces the filters found in
--- the arguments, and may name callback filters.
+-- the arguments, and may name callback filters. Nothing escapes it: an
+-- exception escaping a foreign export goes to GHC's top-level handler,
+-- which ends the process.
 hsMain :: CInt -> Ptr CString -> Ptr CChar -> CSize -> Ptr () -> CSize -> IO CInt
-hsMain argc argv fPtr fLen filters nFilters = do
-  (prg, args) <- do
-    all' <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
-    pure $ case all' of
-      p : as -> (p, as)
-      [] -> ("pandoc", [])
+hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
+  progName <- newIORef "pandoc"
   r <- try $ do
-    override <- if fPtr == nullPtr then pure Nothing else do
-      json <- peekBytes fPtr fLen
-      let parsed = do
-            v <- Aeson.eitherDecodeStrict json
-            wrapped <- callbackFilters (fromIntegral nFilters)
-                         (Aeson.object ["filters" .= (v :: Aeson.Value)])
-            case wrapped of
-              Aeson.Object o | Just fs <- KM.lookup "filters" o -> Aeson.parseEither Aeson.parseJSON fs
-              _ -> Left "filters: expected a list"
-      either (throwIO . PandocOptionError . T.pack) (pure . Just) parsed
-    E.handle (handleError . Left) $ case (takeBaseName prg, subcommand args) of
-     ("pandoc-lua", _) -> runLuaInterpreter prg args
-     (_, Just "lua") -> runLuaInterpreter (prg ++ " lua") (drop 1 args)
-     (_, Just _) -> do
-      hPutStrLn stderr $ "Server mode unsupported.\n" <>
-                         "libpandoc runs pandoc in process; run pandoc server for a server."
-      E.throwIO (ExitFailure 4)
-     _ -> do
-      engine <- getEngine
-      res <- parseOptionsFromArgs options defaultOpts prg args
-      case res of
-        Left info -> handleOptInfo engine info
-        Right opts0 -> do
-          let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
-          convertWithOpts (withHooks filters (fromIntegral nFilters) opts engine)
-                          (routeFilters opts)
-  hFlush stdout
-  hFlush stderr
-  case r of
+    enc <- argvEncoding
+    (prg, args) <- do
+      all' <- mapM (GHC.peekCString enc) =<< peekArray (fromIntegral argc) argv
+      pure $ case all' of
+        p : as -> (p, as)
+        [] -> ("pandoc", [])
+    writeIORef progName prg
+    mainWith prg args
+  -- what pandoc wrote, as GHC's top-level handler flushes it at the end
+  flushed <- try (hFlush stdout)
+  _ <- tryAll (hFlush stderr)
+  case r >> flushed of
     Right () -> pure 0
     Left (e :: SomeException)
       | Just ExitSuccess <- fromException e -> pure 0
       | Just (ExitFailure c) <- fromException e -> pure (fromIntegral c)
+        -- standard output's reader went away: as the command, which GHC's
+        -- top-level handler ends with status 0, silently
+      | Just io <- fromException e, isResourceVanishedError io
+      , ioeGetHandle io == Just stdout -> pure 0
       | otherwise -> do
           -- as GHC's top-level handler reports it for pandoc
-          hPutStrLn stderr (takeBaseName prg ++ ": " ++ displayException e)
-          hFlush stderr
+          prg <- readIORef progName
+          _ <- tryAll $ do
+            hPutStrLn stderr (takeBaseName prg ++ ": " ++ message e)
+            hFlush stderr
           pure 1
+  where
+    mainWith prg args = do
+      override <- if fPtr == nullPtr then pure Nothing else do
+        json <- peekBytes fPtr fLen
+        let parsed = do
+              v <- Aeson.eitherDecodeStrict json
+              wrapped <- callbackFilters (fromIntegral nFilters)
+                           (Aeson.object ["filters" .= (v :: Aeson.Value)])
+              case wrapped of
+                Aeson.Object o | Just fs <- KM.lookup "filters" o -> Aeson.parseEither Aeson.parseJSON fs
+                _ -> Left "filters: expected a list"
+        either (throwIO . PandocOptionError . T.pack) (pure . Just) parsed
+      E.handle (handleError . Left) $ case (takeBaseName prg, subcommand args) of
+        ("pandoc-lua", _) -> runLuaInterpreter prg args
+        (_, Just "lua") -> runLuaInterpreter (prg ++ " lua") (drop 1 args)
+        (_, Just _) -> do
+          hPutStrLn stderr $ "Server mode unsupported.\n" <>
+                             "libpandoc runs pandoc in process; run pandoc server for a server."
+          E.throwIO (ExitFailure 4)
+        _ -> do
+          engine <- getEngine
+          res <- parseOptionsFromArgs options defaultOpts prg args
+          case res of
+            -- as pandoc-cli's, which says what it was built with
+            Left VersionInfo -> versionInfo features (Just (T.unpack (engineName engine))) ""
+            Left info -> handleOptInfo engine info
+            Right opts0 -> do
+              let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
+              convertWithOpts (withHooks filters (fromIntegral nFilters) opts engine)
+                              (routeFilters opts)
+    -- pandoc-cli's, for what pandoc_main does: no server, pandoc lua but
+    -- in the wasm build
+    features =
+#if defined(wasm32_HOST_ARCH)
+      ["-server", "-lua"]
+#else
+      ["-server", "+lua"]
+#endif
+
+-- | The encoding of pandoc_main's arguments: as the command's getArgs, the
+-- file system's, which gives bytes that aren't text back unchanged when
+-- used as a path (a file named in Latin-1 on Linux). On Windows, where the
+-- command reads its arguments as UTF-16, the header's UTF-8.
+argvEncoding :: IO TextEncoding
+#if defined(mingw32_HOST_OS)
+argvEncoding = pure utf8
+#else
+argvEncoding = getFileSystemEncoding
+#endif
 
 -- | pandoc's subcommands: @lua@ and @server@, as the first argument.
 subcommand :: [String] -> Maybe String
@@ -695,17 +732,22 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
       -- rather than extracted into a directory, as for stdout
       stdoutFile = tmp </> "stdout.out"
       logFile = maybe (tmp </> "log.json") id (optLogFile opts)
+      -- no input files are standard input, as for pandoc
       fromStdin = case optInputFiles opts of
-                    Nothing -> True
-                    Just fs -> fs == ["-"]
+                    Just fs | not (null fs) -> fs == ["-"]
+                    _ -> True
       toStdout = maybe True (== "-") (optOutputFile opts)
   inputFiles <- case input of
     Nothing -> pure (optInputFiles opts)
     Just bytes -> do
+      files <- case optInputFiles opts of
+        Just fs | not (null fs) ->
+          if "-" `elem` fs then pure (map (\f -> if f == "-" then stdinFile else f) fs)
+          else throwIO $ PandocOptionError
+            "input is given, but the input files don't name it: add \"-\" to them, or give no input"
+        _ -> pure [stdinFile]
       B.writeFile stdinFile bytes
-      pure $ Just $ maybe [stdinFile]
-               (map (\f -> if f == "-" then stdinFile else f))
-               (optInputFiles opts)
+      pure (Just files)
   let opts' = opts
         { optInputFiles = inputFiles
         , optOutputFile = if toStdout then Just stdoutFile else optOutputFile opts
@@ -742,19 +784,42 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
       pure $ Result out Nothing logJson
 
 -- | Run an action and hand the result to C, turning any exception into an
--- error result: nothing may escape into the host process.
+-- error result: nothing may escape into the host process, as GHC's
+-- top-level handler, which every foreign export runs under, would end it.
+-- So the whole result is evaluated here (a lazy part of it, or of an
+-- error's message, may throw too); NULL only if memory runs out.
 respond :: IO Result -> IO (Ptr ())
-respond act = do
-  r <- try act
-  newResult $ case r of
-    Right res -> res
-    Left (e :: SomeException) -> Result B.empty (Just (describe e)) "[]"
+respond act = handleAll (const (pure nullPtr)) $ do
+  r <- try (forced =<< act)
+  res <- case r of
+    Right res -> pure res
+    Left e -> do
+      d <- try (forcedPair (describe e))
+      pure $ Result B.empty
+        (Just (either (\(_ :: SomeException) -> ("Exception", "(a message that failed)")) id d)) "[]"
+  newResult res
+  where
+    forced (Result o e l) = Result <$> evaluate o <*> traverse forcedPair e <*> evaluate l
+    forcedPair (k, m) = (,) <$> evaluate k <*> evaluate m
 
 describe :: SomeException -> (B.ByteString, B.ByteString)
 describe e = case fromException e of
   Just (pe :: PandocError) ->
     (B8.pack (conNameOf pe), TE.encodeUtf8 (renderError pe))
-  Nothing -> ("Exception", TE.encodeUtf8 (T.pack (displayException e)))
+  Nothing -> ("Exception", TE.encodeUtf8 (T.pack (message e)))
+
+-- | An exception's message, without the context GHC adds to it from 9.10
+-- (a backtrace of the runtime's own code, which tells a reader nothing).
+message :: SomeException -> String
+message (SomeException e) = displayException e
+
+-- | Catch everything, asynchronous exceptions too: for the outermost
+-- layer of what a foreign export runs.
+tryAll :: IO a -> IO (Either SomeException a)
+tryAll = try
+
+handleAll :: (SomeException -> IO a) -> IO a -> IO a
+handleAll = E.handle
 
 -- | The name of a value's constructor, e.g. "PandocParseError".
 conNameOf :: (Generic a, ConName (Rep a)) => a -> String

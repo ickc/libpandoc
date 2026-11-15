@@ -30,8 +30,11 @@ Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
 
 The Haskell runtime starts on first use, without installing signal
-handlers, and every Haskell exception becomes an error result: nothing
-exits or crashes the host process. Calls may be made from any thread,
+handlers, and every Haskell exception becomes an error result (or
+`pandoc_main`'s status): nothing pandoc does exits or crashes the host
+process. What stays the host's (a Lua filter's `os.exit` and `print`,
+standard output and error left open, callbacks that return, memory) is
+listed at the top of the header. Calls may be made from any thread,
 concurrently, and run in parallel: pandoc runs on one thread per logical
 core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
 (like `OMP_NUM_THREADS`), or what `pandoc_set_num_threads` says, never

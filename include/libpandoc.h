@@ -15,8 +15,25 @@
  *     its "pandoc-api-version";
  *   - queries (formats, extensions, templates, versions) are JSON.
  *
- * All strings are UTF-8. Buffers passed in are borrowed; results are owned
- * by the caller and released with pandoc_result_free.
+ * All strings are UTF-8 (but pandoc_main's arguments). Buffers passed in
+ * are borrowed; results are owned by the caller and released with
+ * pandoc_result_free.
+ *
+ * Nothing pandoc does ends or crashes the host process: every Haskell
+ * exception becomes an error result, or pandoc_main's status. What stays
+ * the host's business:
+ *   - a Lua filter or script runs with Lua's standard library, so its
+ *     os.exit ends the process (as it ends pandoc's), and its print and
+ *     io.write write to the process's standard output;
+ *   - pandoc_main writes to file descriptors 1 and 2, and so may filters
+ *     (a JSON filter's standard error is the process's), so they must be
+ *     open when the runtime starts: a descriptor the host closed is taken
+ *     by the runtime's own files, and pandoc's messages then go there
+ *     (pandoc_main with an unknown option and descriptor 2 closed hangs);
+ *   - a callback filter must return: it must not unwind across pandoc
+ *     (longjmp, a C++ exception, a Rust panic);
+ *   - memory: running out of it ends the process, as the runtime can't
+ *     recover from that inside a library.
  */
 #ifndef LIBPANDOC_H
 #define LIBPANDOC_H
@@ -44,9 +61,12 @@ extern "C" {
  * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
  * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
  * called from several threads at once and is clamped to the processors;
- * 1.9: a change of meaning, not only additions: pandoc_set_num_threads
+ * 1.9: changes of meaning, not only additions: pandoc_set_num_threads
  * changes nothing once pandoc's threads have grown, and returns the number
- * in effect).
+ * in effect; input given with input-files that don't name it is an error;
+ * pandoc_main decodes its arguments as the command does and returns on a
+ * broken standard output; an "Exception"'s message has no backtrace; a
+ * filter whose fn is NULL is an error).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -64,7 +84,9 @@ typedef struct pandoc_result {
     size_t output_len;
     /* On failure, NUL-terminated: the pandoc error constructor (e.g.
      * "PandocParseError", "PandocUnknownReaderError") or "Exception" for
-     * anything else, and the message pandoc would print. NULL on success. */
+     * anything else, and the message pandoc would print (for an
+     * "Exception", its message only, without the backtrace GHC 9.10 adds
+     * to it: from 1.9). NULL on success. */
     char *error_kind;
     char *error_message;
     /* NUL-terminated JSON array of pandoc's log messages (warnings and
@@ -124,7 +146,10 @@ LIBPANDOC_API int pandoc_abi_version(void);
  *          {"from": "markdown", "to": "html", "standalone": true}
  * input:   bytes to use as standard input, or NULL to use the options'
  *          input-files (or, with neither, the process's real stdin, as the
- *          pandoc CLI would).
+ *          pandoc CLI would). Given with input-files, they must name it as
+ *          "-" (as on pandoc's command line), else it's a PandocOptionError
+ *          (from 1.9; before, the input was ignored). The same for
+ *          pandoc_convert_args's file arguments.
  *
  * Output goes to result->output unless the options set output-file. Captured
  * output has LF line endings unless the options set "eol"; files get
@@ -186,7 +211,9 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *
  * fn returns 0 and puts the new document, as pandoc's JSON, in out with
  * pandoc_buffer_set; or returns nonzero and puts a UTF-8 error message in
- * out, which fails the conversion with a PandocFilterError.
+ * out, which fails the conversion with a PandocFilterError. A filter whose
+ * fn is NULL fails it so too (from 1.9; before, it crashed; in
+ * libpandoc.wasm, NULL is the host's import libpandoc.filter instead).
  *
  * fn may call libpandoc again (pandoc_convert, pandoc_query, ...), for
  * example to parse a fragment of text; those are separate conversions. */
@@ -227,7 +254,15 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  * messages). pandoc reads standard input and writes standard output and
  * standard error itself, answers informational options (--version,
  * --list-*, -D, --help, ...), and reports errors, all as the command does;
- * the return value is the exit status pandoc would exit with.
+ * the return value is the exit status pandoc would exit with. Arguments
+ * are decoded as the pandoc command decodes its own: in the file system's
+ * encoding (the locale's, keeping bytes that aren't text, so that any
+ * file name works), on Windows as UTF-8 (from 1.9; before, as UTF-8
+ * everywhere, and an argument that wasn't ended the process). Standard
+ * output closed by its reader (a broken pipe, SIGPIPE ignored) ends the
+ * command with status 0, as it ends pandoc, but returns (from 1.9; before,
+ * the process exited). --version prints pandoc-cli's lines, saying what
+ * pandoc_main does: "Features: -server +lua" and the scripting engine.
  *
  * filters_json, if not NULL, is a JSON array (as the "filters" option)
  * replacing the filters pandoc found in the arguments and defaults files;
@@ -292,6 +327,8 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  * default-template nor parse-args. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 
+/* Every function returning a pandoc_result returns NULL only when the
+ * runtime isn't running (after pandoc_shutdown) or memory ran out. */
 LIBPANDOC_API void pandoc_result_free(pandoc_result *result);
 
 #ifdef __cplusplus

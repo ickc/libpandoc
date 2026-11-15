@@ -263,6 +263,12 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
     if (filters[i].fn == NULL)
         return libpandoc_host_filter(filters[i].userdata, doc, doc_len,
                                      context, context_len, out);
+#else
+    if (filters[i].fn == NULL) {
+        static const char msg[] = "the filter's function (fn) is NULL";
+        pandoc_buffer_set(out, msg, sizeof msg - 1);
+        return 1;
+    }
 #endif
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
 }
