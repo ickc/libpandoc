@@ -26,9 +26,12 @@
  * conversions at once in a fresh process answer "Exception: <<loop>>" now
  * and then (on Linux 3 to 4 in 10,000 processes, whether the number of
  * threads changes or not: one thread throughout, or 4 from the start, as
- * often), which is what failed this test twice in CI on macOS x86-64. A
- * bug of its own, not what this tests; with that one conversion first, 0
- * of 42,000.
+ * often), which is what failed this test twice in CI on macOS x86-64: GHC
+ * 9.10's lost wakeup (GHC #26324; dev/libpandoc-review/LOOP.md in the
+ * project), not what this tests; with that one conversion first, 0 of
+ * 42,000. libpandoc now makes such a call again (cbits/libpandoc.c, from
+ * 1.10), but the conversion first stays: this test must pass whether or
+ * not that mitigation works, and not depend on an event of 1 in 3,000.
  *
  * The parent itself, which never runs two calls at once, checks the clamp:
  * at least 1, at most one per processor.

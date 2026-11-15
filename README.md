@@ -48,7 +48,11 @@ several at once), and afterwards returns the number in effect (1.9:
 changing it while conversions ran now and then hung GHC's runtime).
 `{"query": "num-threads"}` tells it. On a 16-core, 32-thread CPU, 16
 threads were as fast as 32 or faster: set it to the number of physical
-cores for throughput.
+cores for throughput. Several first calls at once in a process now and
+then fail with `Exception: <<loop>>` although nothing loops (GHC 9.10's
+runtime loses a wakeup: GHC #26324, fixed in 9.12.5 and 9.14.2), so
+libpandoc makes such a call again, up to three times (1.10), unless it was
+given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
 are this C interface's own, 1.9 now; the embedded pandoc's version and its

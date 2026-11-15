@@ -66,6 +66,49 @@ static void leave(void)
     if (--depth == 0) atomic_fetch_sub(&active_calls, 1);
 }
 
+/* A workaround for a bug of GHC's runtime, to remove when libpandoc's GHC
+ * has the fix: GHC 9.12.5, 9.14.2 or later (pins.env's GHC_VERSION). Then
+ * delete lost_wakeup, RETRY_LOST_WAKEUP and their uses below (each call
+ * back to "r = libpandoc_hs_...(...)"); in the header, the paragraphs "A
+ * call that fails with the error "Exception", "<<loop>>" is made again"
+ * and "fn may be called twice", and README's line; the comment at the top
+ * of test/threads.c.
+ *
+ * GHC 9.10's runtime can lose the wakeup of threads waiting for a top-level
+ * value (a CAF: a String literal's, evaluated by stg_unpack_cstring) that
+ * another thread is evaluating for the first time, when that thread's stack
+ * check fails right after it claimed the value. The waiting threads are
+ * then unreachable, and the garbage collector throws them NonTermination:
+ * the call fails with "Exception: <<loop>>" although nothing loops (GHC
+ * #26324 and #27272). It needs several threads to first use the same
+ * values at once, so several first calls in a process: about 1 in 3,000
+ * processes making 8 at once (dev/libpandoc-review/LOOP.md in the
+ * project). Such a call is made again, up to three times: a value that
+ * really loops fails every time. Nothing of a failed attempt reaches the
+ * caller (its result is freed; the runtime prints nothing). Safe to make
+ * again: the caller's buffers are only read, and a conversion's files are
+ * written again. But not a conversion given no input, which may have read
+ * the process's standard input: made again, it would read what's left.
+ * (A time limit doesn't hide it as a timeout: LibPandoc.hs's 'within'
+ * holds the thread by a weak reference.) */
+static int lost_wakeup(const pandoc_result *r)
+{
+    return r && r->status != 0 && r->error_kind && r->error_message &&
+           strcmp(r->error_kind, "Exception") == 0 &&
+           strcmp(r->error_message, "<<loop>>") == 0;
+}
+
+/* r = call, made again while it fails with a lost wakeup and again is
+ * true, up to three times more */
+#define RETRY_LOST_WAKEUP(r, again, call)                            \
+    do {                                                             \
+        for (int tries_ = 0;; tries_++) {                            \
+            (r) = (call);                                            \
+            if (tries_ == 3 || !(again) || !lost_wakeup(r)) break;   \
+            pandoc_result_free(r);                                   \
+        }                                                            \
+    } while (0)
+
 static void start_runtime(void)
 {
     /* Options are given as trusted link-time options, and anything from the
@@ -156,8 +199,9 @@ pandoc_result *pandoc_convert(const char *options, size_t options_len,
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_convert((char *)options, options_len,
-                                (char *)input, input_len, input != NULL);
+    RETRY_LOST_WAKEUP(r, input != NULL,
+                      libpandoc_hs_convert((char *)options, options_len,
+                                           (char *)input, input_len, input != NULL));
     leave();
     return r;
 }
@@ -167,8 +211,9 @@ pandoc_result *pandoc_convert_args(int argc, const char *const *argv,
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_convert_args(argc, (char **)argv,
-                                     (char *)input, input_len, input != NULL);
+    RETRY_LOST_WAKEUP(r, input != NULL,
+                      libpandoc_hs_convert_args(argc, (char **)argv,
+                                                (char *)input, input_len, input != NULL));
     leave();
     return r;
 }
@@ -179,9 +224,10 @@ pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_convert_filters((char *)options, options_len,
-                                        (char *)input, input_len, input != NULL,
-                                        (void *)filters, filters_len);
+    RETRY_LOST_WAKEUP(r, input != NULL,
+                      libpandoc_hs_convert_filters((char *)options, options_len,
+                                                   (char *)input, input_len, input != NULL,
+                                                   (void *)filters, filters_len));
     leave();
     return r;
 }
@@ -192,9 +238,10 @@ pandoc_result *pandoc_convert_args_filters(int argc, const char *const *argv,
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_convert_args_filters(argc, (char **)argv,
-                                             (char *)input, input_len, input != NULL,
-                                             (void *)filters, filters_len);
+    RETRY_LOST_WAKEUP(r, input != NULL,
+                      libpandoc_hs_convert_args_filters(argc, (char **)argv,
+                                                        (char *)input, input_len, input != NULL,
+                                                        (void *)filters, filters_len));
     leave();
     return r;
 }
@@ -299,7 +346,7 @@ pandoc_result *pandoc_read_many(const char *request, size_t request_len)
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_read_many((char *)request, request_len);
+    RETRY_LOST_WAKEUP(r, 1, libpandoc_hs_read_many((char *)request, request_len));
     leave();
     return r;
 }
@@ -308,7 +355,7 @@ pandoc_result *pandoc_query(const char *query, size_t query_len)
 {
     pandoc_result *r;
     if (enter() != 0) return NULL;
-    r = libpandoc_hs_query((char *)query, query_len);
+    RETRY_LOST_WAKEUP(r, 1, libpandoc_hs_query((char *)query, query_len));
     leave();
     return r;
 }

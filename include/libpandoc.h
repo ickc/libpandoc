@@ -74,7 +74,7 @@ extern "C" {
  * messages in the log instead of printing them; 1.10: "timeout" and the
  * error kind "Timeout"; "untrusted" reads nothing of the user data
  * directory; filters are told the writer's options: "writer-options",
- * PANDOC_WRITER_OPTIONS).
+ * PANDOC_WRITER_OPTIONS; a call failing with "<<loop>>" is made again).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -132,7 +132,18 @@ typedef struct pandoc_result {
  * or, before the growth, the number pandoc will grow to. It may be called
  * from any thread, also from several at once: the calls take turns, and
  * the last one before the growth decides. After pandoc_shutdown it
- * returns 0. */
+ * returns 0.
+ *
+ * A call that fails with the error "Exception", "<<loop>>" is made again,
+ * up to three times (from 1.10). GHC 9.10's runtime, which libpandoc's
+ * pandoc is built with, now and then loses the wakeup of threads waiting
+ * for a value that another thread evaluates for the first time, and they
+ * fail so although nothing loops (GHC #26324: about 1 in 3,000 processes
+ * starting 8 conversions at once). Only several first calls at once in a
+ * process meet it. Nothing of the failed attempt reaches the caller. Not
+ * pandoc_main, nor a conversion given no input (it may have read the
+ * process's standard input). A callback filter may thus run twice in one
+ * call (below). To go when libpandoc's GHC has the fix (9.12.5, 9.14.2). */
 LIBPANDOC_API int pandoc_set_num_threads(int n);
 
 /* Start the Haskell runtime. Safe to call more than once and from any
@@ -281,7 +292,12 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  * libpandoc.wasm, NULL is the host's import libpandoc.filter instead).
  *
  * fn may call libpandoc again (pandoc_convert, pandoc_query, ...), for
- * example to parse a fragment of text; those are separate conversions. */
+ * example to parse a fragment of text; those are separate conversions.
+ *
+ * fn may be called twice for one place in one call, rarely: when the call
+ * failed with "<<loop>>" after fn ran, and libpandoc makes it again (see
+ * Threads; from 1.10). What fn does besides answering (counting, writing
+ * a file) then happens twice. */
 typedef struct pandoc_buffer pandoc_buffer;
 
 typedef int (*pandoc_filter_fn)(void *userdata,
