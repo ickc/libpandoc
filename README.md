@@ -16,7 +16,10 @@ else
 pandoc_result_free(r);
 ```
 
-Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
+Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python)
+(with pandocpy), [libpandoc-rs](https://github.com/ickc/libpandoc-rs)
+(with pandocrs), [LibPandoc.jl](https://github.com/ickc/LibPandoc.jl), and
+JavaScript on libpandoc.wasm ([`wasm/`](wasm/README.md)).
 
 ## The ABI
 
@@ -25,37 +28,46 @@ Bindings: [libpandoc-python](https://github.com/ickc/libpandoc-python).
 | `pandoc_convert(options, input)` | a conversion; `options` is a JSON object in [defaults-file](https://pandoc.org/MANUAL.html#defaults-files) format, `input` is stdin |
 | `pandoc_convert_args(argc, argv, input)` | the same with command-line arguments, parsed by pandoc itself |
 | `pandoc_convert_filters(options, input, filters, n)` | a conversion with filters implemented by the caller, run in process (below) |
+| `pandoc_convert_args_filters(argc, argv, input, filters, n)` | the same with command-line arguments |
+| `pandoc_buffer_set(out, data, len)` | a filter's answer |
 | `pandoc_read_many(request)` | many texts read at once, each on its own, in parallel: for filters parsing many fragments |
-| `pandoc_query(query)` | formats, extensions, templates and versions, as JSON |
+| `pandoc_query(query)` | formats, extensions, templates, versions, what command-line arguments ask for, as JSON |
+| `pandoc_main(argc, argv, filters_json, filters, n)` | the `pandoc` command in process (standard input and output, pandoc's exit status), `pandoc lua` too |
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
+| `pandoc_set_num_threads(n)` | the number of threads pandoc grows to (below) |
+| `pandoc_init()`, `pandoc_shutdown()` | start the runtime (implicit), stop it (at the end, optional) |
+| `pandoc_abi_version()` | the loaded library's interface version |
 
 The Haskell runtime starts on first use, without installing signal
 handlers, and every Haskell exception becomes an error result (or
-`pandoc_main`'s status): nothing pandoc does exits or crashes the host
-process. What stays the host's (a Lua filter's `os.exit` and `print`,
-standard output and error left open, callbacks that return, memory) is
-listed at the top of the header. Calls may be made from any thread,
-concurrently, and run in parallel: pandoc runs on one thread per logical
-core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
-(like `OMP_NUM_THREADS`), or what `pandoc_set_num_threads` says, never
-more than one per logical core the process may use (more help nobody).
-Threads beyond the first start once, when pandoc first runs something in
-parallel (a call while another thread's call runs, or `pandoc_read_many`
-with several inputs), so a program converting one document at a time
-doesn't pay for them. The number is fixed from then on:
-`pandoc_set_num_threads` sets it only before (from any thread, also from
-several at once), and afterwards returns the number in effect (1.9:
-changing it while conversions ran now and then hung GHC's runtime).
-`{"query": "num-threads"}` tells it. On a 16-core, 32-thread CPU, 16
-threads were as fast as 32 or faster: set it to the number of physical
-cores for throughput. Several first calls at once in a process now and
-then fail with `Exception: <<loop>>` although nothing loops (GHC 9.10's
-runtime loses a wakeup: GHC #26324, fixed in 9.12.5 and 9.14.2), so
+`pandoc_main`'s status): a pandoc error, a bad option or argument, or a
+broken pipe doesn't end the host process. What can still end it: running out
+of memory (the runtime can't recover from that inside a library, and there
+is no memory limit per call: below), and a Lua filter's or script's
+`os.exit`; and what stays the host's (Lua's `print` writes to standard
+output, standard output and error must be open, a callback must return
+rather than unwind) is listed at the top of the header. Calls may be made
+from any thread, concurrently, and run in parallel: pandoc runs on one
+thread per logical core the process may use (its CPU affinity), or
+`LIBPANDOC_NUM_THREADS` (like `OMP_NUM_THREADS`), or what
+`pandoc_set_num_threads` says, never more than one per logical core the
+process may use (more help nobody). Threads beyond the first start once,
+when pandoc first runs something in parallel (a call while another
+thread's call runs, or `pandoc_read_many` with several inputs), so a
+program converting one document at a time doesn't pay for them. The number
+is fixed from then on: `pandoc_set_num_threads` sets it only before (from
+any thread, also from several at once), and afterwards returns the number
+in effect (1.9: changing it while conversions ran now and then hung GHC's
+runtime). `{"query": "num-threads"}` tells it. On a 16-core, 32-thread
+CPU, 16 threads were as fast as 32 or faster: set it to the number of
+physical cores for throughput. Several first calls at once in a process
+now and then fail with `Exception: <<loop>>` although nothing loops (GHC
+9.10's runtime loses a wakeup: GHC #26324, fixed in 9.12.5 and 9.14.2), so
 libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.9 now; the embedded pandoc's version and its
+are this C interface's own, 1.10 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 
@@ -184,12 +196,15 @@ cc test/smoke.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' -o d
 `lib/libpandoc.so` (`.dylib`; `bin/pandoc.dll` on Windows) and
 `share/libpandoc/api-version.json`.
 
-On Linux and macOS, cabal links foreign libraries against Haskell shared
-libraries, and on x86-64 Linux GHC's static libraries aren't
-position-independent, so one self-contained `.so` isn't possible with a
-stock GHC. `scripts/stage.sh` therefore copies the ~200 Haskell shared
-libraries into `lib/libpandoc/` with relative RPATHs (about 300 MB, 60 MB
-compressed). The Windows DLL is standalone.
+On Linux, `scripts/merge-link.sh` (GHC's linker in the build) links the
+Haskell packages into `libpandoc.so` from their static archives, built
+position-independent, but GHC's 11 libraries that come only shared
+(base, ghc-internal, template-haskell, ...): `scripts/stage.sh` copies
+those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
+176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
+them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
+release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
+is the ABI's (`pkg-config --atleast-version=1.10 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the

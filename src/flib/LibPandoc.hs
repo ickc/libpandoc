@@ -62,6 +62,7 @@ import qualified Data.Aeson.Types as Aeson (parseEither)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Unsafe as BU
 import Data.Char (toLower)
 import Data.List (intersperse, stripPrefix)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe, maybeToList)
@@ -355,8 +356,13 @@ runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf ->
         , "output-format" .= outputFormat opts
         , "reader-options" .= envReaderOptions env
         , "writer-options" .= writerOptionsJSON (envWriterOptions env) ]
-  status <- B.useAsCStringLen docJson $ \(dp, dl) ->
-    B.useAsCStringLen context $ \(cp, cl) ->
+  -- the bytes themselves, not a copy with a NUL (the header promises
+  -- none): a strict ByteString's buffer is pinned, so the collector doesn't
+  -- move it while fn runs (a safe call, during which other threads may
+  -- collect, and fn may call libpandoc again), and it is kept alive until
+  -- the call returns; fn only reads it, and only during the call
+  status <- BU.unsafeUseAsCStringLen docJson $ \(dp, dl) ->
+    BU.unsafeUseAsCStringLen context $ \(cp, cl) ->
       callFilter filters (fromIntegral k) dp (fromIntegral dl)
                  cp (fromIntegral cl) buf
   p <- bufferData buf

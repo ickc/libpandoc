@@ -19,9 +19,10 @@
  * are borrowed; results are owned by the caller and released with
  * pandoc_result_free.
  *
- * Nothing pandoc does ends or crashes the host process: every Haskell
- * exception becomes an error result, or pandoc_main's status. What stays
- * the host's business:
+ * No error ends or crashes the host process: every Haskell exception
+ * becomes an error result, or pandoc_main's status. What can still end it
+ * (running out of memory, a Lua filter's os.exit), and what stays the
+ * host's business:
  *   - a Lua filter or script runs with Lua's standard library, so its
  *     os.exit ends the process (as it ends pandoc's), and its print and
  *     io.write write to the process's standard output;
