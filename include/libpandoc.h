@@ -33,7 +33,11 @@
  *   - a callback filter must return: it must not unwind across pandoc
  *     (longjmp, a C++ exception, a Rust panic);
  *   - memory: running out of it ends the process, as the runtime can't
- *     recover from that inside a library.
+ *     recover from that inside a library; and there is no memory limit for
+ *     a call (see "timeout" at pandoc_convert);
+ *   - time: a call runs until it ends, unless its options give it a
+ *     "timeout" (pandoc_convert, pandoc_read_many), which stops pandoc's own
+ *     code, not code in a foreign call (callbacks, Lua).
  */
 #ifndef LIBPANDOC_H
 #define LIBPANDOC_H
@@ -67,12 +71,13 @@ extern "C" {
  * pandoc_main decodes its arguments as the command does and returns on a
  * broken standard output; an "Exception"'s message has no backtrace; a
  * filter whose fn is NULL is an error; pandoc_read_many returns its
- * messages in the log instead of printing them).
+ * messages in the log instead of printing them; 1.10: "timeout" and the
+ * error kind "Timeout").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 9
+#define LIBPANDOC_ABI_VERSION_MINOR 10
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -84,10 +89,11 @@ typedef struct pandoc_result {
     char *output;
     size_t output_len;
     /* On failure, NUL-terminated: the pandoc error constructor (e.g.
-     * "PandocParseError", "PandocUnknownReaderError") or "Exception" for
-     * anything else, and the message pandoc would print (for an
-     * "Exception", its message only, without the backtrace GHC 9.10 adds
-     * to it: from 1.9). NULL on success. */
+     * "PandocParseError", "PandocUnknownReaderError"), "Timeout" for a call
+     * stopped by its time limit (libpandoc's, from 1.10: "timeout" at
+     * pandoc_convert), or "Exception" for anything else, and the message
+     * pandoc would print (for an "Exception", its message only, without
+     * the backtrace GHC 9.10 adds to it: from 1.9). NULL on success. */
     char *error_kind;
     char *error_message;
     /* NUL-terminated JSON array of pandoc's log messages (warnings and
@@ -169,6 +175,39 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * Anything else fails with a PandocOptionError naming it. A host sets
  * "untrusted": true on whatever such code passes (replacing its own
  * "untrusted"), and the list lives here, the same for every host.
+ * "untrusted" is about options: it sets no time limit. A host sets one
+ * itself on such code's calls ("timeout", below: replacing the code's own,
+ * or the smaller of the two), e.g. a wasm filter's remaining time, and
+ * gives documents from someone it doesn't trust their own memory (below).
+ *
+ * "timeout": seconds (a number, fractions allowed; 0 or absent: none;
+ * libpandoc's, not pandoc's, from 1.10). A conversion still running after
+ * that long is stopped and fails with the error kind "Timeout" and an
+ * empty log; its temporary files are removed, and the process goes on:
+ * the next call works. It stops pandoc's own code: readers, writers,
+ * templates, citeproc (all of which allocate as they run, which is where
+ * the runtime can stop them), and a JSON filter, which is sent SIGTERM
+ * (Windows: terminated) and reaped (a program it started itself, not
+ * exec'd, is its own business). It cannot stop code in a foreign call:
+ *   - a callback filter (and what it calls, pandoc included) runs to its
+ *     end, and the call fails with "Timeout" when it returns;
+ *   - Lua (filters, custom readers and writers) runs in C, so it is not
+ *     stopped at all: a Lua filter's `while true do end` runs on, holding
+ *     its thread, and so does pandoc's code a Lua filter calls
+ *     (pandoc.read). The time limit doesn't cover Lua.
+ * pandoc_convert_args, pandoc_convert_args_filters and pandoc_main have no
+ * time limit (pandoc has no such option). libpandoc.wasm stops a call as
+ * natively; its JSON filters are the host's, so callbacks.
+ *
+ * Memory: there is no memory limit for a call. Running out of memory ends
+ * the process (see the top), and a heap limit (+RTS -M) in a library ends
+ * it too: the runtime has no main thread to raise HeapOverflow in. (A
+ * per-thread allocation limit would not be one either: pandoc allocates
+ * gigabytes for a large document while holding little.) For documents
+ * from someone you don't trust, give the conversion memory of its own:
+ * libpandoc.wasm (its heap is capped, and running out ends only that
+ * instance), a separate process, or a container with a memory limit,
+ * together with a "timeout".
  *
  * "sandbox": true is pandoc's --sandbox (readers and writers read only the
  * files the options name, and fetch nothing), and more (from 1.8):
@@ -296,9 +335,16 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * abbreviations), for untrusted code. Each text is prepared as pandoc prepares its
  * input (tabs expanded unless preserve-tabs, carriage returns dropped).
  *
+ * "timeout" in "options" (from 1.10), as for pandoc_convert, is the whole
+ * call's: the readers run in parallel, and the call returns within about
+ * that long. An input not read by then is {"error": {"kind": "Timeout",
+ * ...}} in its place, and the others are kept; the call itself fails with
+ * "Timeout" only if setting up the reader took that long.
+ *
  * result->output: a JSON array with, for each input, its document as
  * pandoc's JSON, or {"error": {"kind": ..., "message": ...}}. The call itself
- * fails only for a malformed request or an unknown format.
+ * fails only for a malformed request, an unknown format, or its time
+ * limit.
  *
  * result->log: pandoc's messages, as a conversion's (the reader's warnings,
  * such as an include file not found): the setup's, then each input's, in

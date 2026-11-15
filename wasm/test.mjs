@@ -131,6 +131,18 @@ test("sandbox: citeproc reads only the bibliography the options name", () => {
                /Own Title/);
 });
 
+test("timeout: a call past it is a Timeout, an input of read_many in its place", () => {
+  const slow = ">".repeat(20000); // nested block quotes: seconds
+  const t0 = performance.now();
+  assert.throws(() => pandoc.convert({ from: "markdown", to: "html", timeout: 0.3 }, slow),
+                (e) => e.kind === "Timeout" && /time limit/.test(e.message));
+  assert.ok(performance.now() - t0 < 5000);
+  const [a, b] = pandoc.readMany(["*a*", slow], { from: "markdown", timeout: 0.3 });
+  assert.equal(a.blocks[0].c[0].t, "Emph");
+  assert.equal(b.error.kind, "Timeout");
+  assert.equal(pandoc.convert({ to: "html" }, "*y*"), "<p><em>y</em></p>\n");
+});
+
 test("another instance from this one's compiled module; StoppedError exported", async () => {
   const again = await load(pandoc.module);
   assert.equal(again.convert({ to: "html" }, "*x*"), "<p><em>x</em></p>\n");

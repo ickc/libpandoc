@@ -79,6 +79,23 @@ allowed (1.8), sandboxed as below, with the references in the document's
 metadata. Wasm filters' calls to pandoc are always untrusted. The list is
 `src/LibPandoc/Untrusted.hs`.
 
+`"untrusted"` limits what the options may do, not how long or how much
+memory pandoc takes over a document: a few kilobytes of markdown can keep
+it busy for minutes, and a Typst loop or a zip bomb can take all memory.
+`"timeout": seconds` (1.10; `pandoc_convert`, `pandoc_read_many`) stops a
+call past its time with the error kind `"Timeout"`, and the process goes
+on. It stops pandoc's own code and JSON filters (terminated and reaped),
+but not code in a foreign call: a callback filter runs to its end first,
+and Lua (filters, custom readers and writers) isn't stopped at all. There
+is no memory limit per call, and can't be in a native library: running
+out of memory ends the process, and so does a heap limit (`+RTS -M`)
+inside a library. So for documents from someone you don't trust, give the
+conversion memory of its own (libpandoc.wasm, whose heap is capped and
+whose instance alone ends; a separate process; a container with a memory
+limit) and a `"timeout"`. A host running a wasm filter passes the
+filter's remaining time as the `"timeout"` of the filter's calls to
+pandoc.
+
 `"sandbox": true` alone is pandoc's `--sandbox`, plus citeproc (1.8):
 pandoc runs its readers and writers in a sandbox, reading only the files
 the options name, but runs citeproc outside it, so a document's metadata

@@ -38,9 +38,16 @@ answers itself:
 module LibPandoc () where
 
 import qualified Control.Exception as E
-import Control.Exception (SomeException (..), bracket, evaluate, fromException,
-                          displayException, throwIO, try)
-import Control.Concurrent (forkFinally, rtsSupportsBoundThreads, setNumCapabilities)
+import Control.Exception (Exception (..), SomeAsyncException, SomeException (..),
+                          asyncExceptionFromException, asyncExceptionToException,
+                          bracket, evaluate, fromException, displayException,
+                          throwIO, try)
+import Control.Concurrent (forkFinally, forkIOWithUnmask, killThread, mkWeakThreadId,
+                           myThreadId, rtsSupportsBoundThreads, setNumCapabilities,
+                           threadDelay, throwTo)
+import Data.Unique (Unique, newUnique)
+import GHC.Clock (getMonotonicTime)
+import System.Mem.Weak (deRefWeak)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
@@ -58,7 +65,8 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.List (intersperse, stripPrefix)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe, maybeToList)
-import Data.Scientific (toBoundedInteger)
+import Data.Scientific (FPFormat (Fixed), formatScientific, fromFloatDigits, toBoundedInteger,
+                        toRealFloat)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
@@ -154,15 +162,16 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   input <- peekInput inPtr inLen hasIn
   let parsed = do
         v0 <- Aeson.eitherDecodeStrict json
+        (limit, v1) <- timeLimit v0
         -- untrusted code doesn't read the process's stdin
-        when (isUntrusted v0 && isNothing input) $
+        when (isUntrusted v1 && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
-        v <- untrusted Convert v0
+        v <- untrusted Convert v1
         v' <- callbackFilters (fromIntegral nFilters) v
-        Aeson.parseEither Aeson.parseJSON v'
+        (,) limit <$> Aeson.parseEither Aeson.parseJSON v'
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (f :: Opt -> Opt) ->
+    Right (limit, f :: Opt -> Opt) -> limited limit $
       convert (withHooks filters (fromIntegral nFilters)) (f defaultOpts) input
 
 -- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
@@ -319,7 +328,9 @@ runJSONFilter opts fenv args f doc = do
                : ("PANDOC_INPUT_FORMAT", T.unpack (inputFormat opts))
                : ("PANDOC_OUTPUT_FORMAT", T.unpack (outputFormat opts))
                : env
-      r <- try $ pipeProcess (Just env') f' args' (Aeson.encode doc)
+      -- (not the time limit's exception, which ends the filter: pipeProcess
+      -- sends it SIGTERM and reaps it)
+      r <- trySync $ pipeProcess (Just env') f' args' (Aeson.encode doc)
       pure $ case r of
         Left (e :: SomeException) -> failed (T.pack (show e))
         Right (ExitSuccess, out) -> either (failed . T.pack) Right (Aeson.eitherDecode' out)
@@ -378,15 +389,17 @@ hsReadMany ptr len = respond $ do
         v <- Aeson.eitherDecodeStrict json
         (optsV, o) <- flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o ->
           (\opts -> (fromMaybe (Aeson.object []) opts, o)) <$> o Aeson..:? "options"
-        optsV' <- untrusted ReadMany optsV
+        (limit, optsV1) <- timeLimit optsV
+        optsV' <- untrusted ReadMany optsV1
         flip Aeson.parseEither optsV' $ \_ -> do
           f <- Aeson.parseJSON optsV'
           inputs <- o Aeson..: "inputs"
-          pure (f defaultOpts, inputs)
+          pure (limit, f defaultOpts, inputs)
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (opts, inputs) -> do
-      (out, logs) <- readMany opts inputs
+    Right (limit, opts, inputs) -> do
+      deadline <- traverse (\s -> (,) s . (+ s) <$> getMonotonicTime) limit
+      (out, logs) <- readMany deadline opts inputs
       pure $ Result (B.concat ("[" : intersperse "," out ++ ["]"])) Nothing
                     (BL.toStrict (encodeLogMessages logs))
 
@@ -395,12 +408,15 @@ hsReadMany ptr len = respond $ do
 -- thread, which also encodes the result (so that all of the work, reading
 -- being lazy, happens in parallel). A failure is that input's result, as an
 -- error object. pandoc's messages, as a conversion's, are returned (the
--- setup's, then each input's in order) rather than printed.
-readMany :: Opt -> [T.Text] -> IO ([B.ByteString], [LogMessage])
-readMany opts inputs = do
+-- setup's, then each input's in order) rather than printed. With a time
+-- limit (its seconds, and the deadline it makes), the call ends by the
+-- deadline: the setup past it fails the call, an input not read by then
+-- is a "Timeout" in its place.
+readMany :: Maybe (Double, Double) -> Opt -> [T.Text] -> IO ([B.ByteString], [LogMessage])
+readMany deadline opts inputs = do
   -- one text needs no threads (a filter's read_as)
   when (length inputs > 1) hsExpandThreads
-  setup <- runIO $ do
+  setup <- untilDeadline $ runIO $ do
     prepare
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
     (reader, exts) <- getReader flvrd
@@ -422,7 +438,8 @@ readMany opts inputs = do
       , readerStripComments = optStripComments opts
       , readerTypstInputs = optTypstInputs opts
       })
-  (setupLog, flvrd, reader, prepared, ropts) <- either throwIO pure setup
+  (setupLog, flvrd, reader, prepared, ropts) <-
+    either throwIO pure =<< maybe (throwIO (TimeLimitExceeded seconds)) pure setup
   -- with "sandbox", as pandoc's --sandbox: a reader reads no file (LaTeX's
   -- \input, RST's include, ...), for texts that aren't trusted
   let readOne t
@@ -448,11 +465,23 @@ readMany opts inputs = do
       failed = "{\"error\":{\"kind\":\"Exception\",\"message\":\"(a message that failed)\"}}"
   vars <- mapM (\t -> do
                   v <- newEmptyMVar
-                  _ <- forkFinally (readEncoded t) (answer v)
+                  _ <- forkFinally (untilDeadline (readEncoded t)) (answer v . fmap (fromMaybe timedOut))
                   pure v) inputs
   (out, logs) <- unzip <$> mapM takeMVar vars
   pure (out, setupLog ++ concat logs)
   where
+    -- the action, if it ends before the deadline
+    untilDeadline :: IO a -> IO (Maybe a)
+    untilDeadline act = case deadline of
+      Nothing -> Just <$> act
+      Just (_, end) -> do
+        now <- getMonotonicTime
+        if now >= end then pure Nothing else within (end - now) act
+    timedOut = ( BL.toStrict $ Aeson.encode $ Aeson.object [ "error" .= Aeson.object
+                   [ "kind" .= ("Timeout" :: T.Text)
+                   , "message" .= timeLimitMessage "reading" seconds ] ]
+               , [] )
+    seconds = maybe 0 fst deadline
     prepare :: PandocIO ()
     prepare = do
       -- messages are returned in the log rather than printed on stderr
@@ -789,7 +818,7 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
             t -> t
         }
   engine <- engineWith opts' <$> getEngine
-  done <- try (convertWithOpts engine (routeFilters opts'))
+  done <- trySync (convertWithOpts engine (routeFilters opts'))
   -- the log, also of a conversion that failed after writing it (as
   -- --fail-if-warnings does, its warnings being the reason); but not the
   -- caller's own log file then, which may be an earlier conversion's
@@ -825,7 +854,81 @@ describe :: SomeException -> (B.ByteString, B.ByteString)
 describe e = case fromException e of
   Just (pe :: PandocError) ->
     (B8.pack (conNameOf pe), TE.encodeUtf8 (renderError pe))
-  Nothing -> ("Exception", TE.encodeUtf8 (T.pack (message e)))
+  Nothing
+    | Just (TimeLimitExceeded s) <- fromException e ->
+        ("Timeout", TE.encodeUtf8 (timeLimitMessage "the call" s))
+    | otherwise -> ("Exception", TE.encodeUtf8 (T.pack (message e)))
+
+-- | A call's time limit (libpandoc's option @"timeout"@, not pandoc's): its
+-- seconds (0 or absent: none), and the options without it.
+timeLimit :: Aeson.Value -> Either String (Maybe Double, Aeson.Value)
+timeLimit (Aeson.Object o) = case KM.lookup "timeout" o of
+  Nothing -> Right (Nothing, Aeson.Object o)
+  Just (Aeson.Number x)
+    | x == 0 -> Right (Nothing, rest)
+    | x > 0 -> Right (Just (toRealFloat x), rest)
+  Just v -> Left ("\"timeout\" is a number of seconds, 0 or more (0: none), not "
+                  <> UTF8.toStringLazy (Aeson.encode v))
+  where rest = Aeson.Object (KM.delete "timeout" o)
+timeLimit v = Right (Nothing, v)
+
+-- | A call that ran past its time limit.
+newtype TimeLimitExceeded = TimeLimitExceeded Double
+  deriving Show
+instance Exception TimeLimitExceeded
+
+timeLimitMessage :: T.Text -> Double -> T.Text
+timeLimitMessage what s = what <> " took longer than its time limit (\"timeout\": "
+  <> T.pack (formatScientific Fixed Nothing (fromFloatDigits s)) <> " s)"
+
+-- | A call under its time limit, if any: past it, the call is stopped and
+-- fails with 'TimeLimitExceeded' (its temporary files removed, a JSON
+-- filter it runs terminated). Also a call that failed once its time was up:
+-- pandoc's code or a library may have caught the exception, and made an
+-- error of its own of it.
+limited :: Maybe Double -> IO Result -> IO Result
+limited Nothing act = act
+limited (Just s) act = do
+  start <- getMonotonicTime
+  r <- within s act
+  end <- getMonotonicTime
+  case r of
+    Just res | isNothing (resultError res) || end - start < s -> pure res
+    _ -> throwIO (TimeLimitExceeded s)
+
+-- | System.Timeout's 'System.Timeout.timeout' (as in base 4.6, before its
+-- event manager variant), but holding the thread it stops only by a weak
+-- reference: a thread that nothing else can wake (a deadlock; GHC 9.10's
+-- lost wakeup, cbits/libpandoc.c) is then still found unreachable by the
+-- garbage collector and fails at once (BlockedIndefinitely..., NonTermination),
+-- rather than waiting for the limit. Not in a foreign call (a callback
+-- filter, Lua): the exception arrives when the call returns.
+within :: Double -> IO a -> IO (Maybe a)
+within s act = do
+  me <- mkWeakThreadId =<< myThreadId
+  u <- newUnique
+  let micros | s * 1e6 >= fromIntegral (maxBound :: Int) = maxBound
+             | otherwise = max 1 (ceiling (s * 1e6))
+      stop = deRefWeak me >>= mapM_ (`throwTo` TimeUp u)
+  E.handleJust (\(TimeUp u') -> if u == u' then Just () else Nothing) (\() -> pure Nothing) $
+    bracket (forkIOWithUnmask $ \unmask -> unmask (threadDelay micros >> stop))
+            (E.uninterruptibleMask_ . killThread)
+            (\_ -> Just <$> act)
+
+-- | The exception 'within' stops a thread with: asynchronous, so that
+-- 'trySync' doesn't take it for the conversion's own failure.
+newtype TimeUp = TimeUp Unique
+instance Show TimeUp where show _ = "<<time limit>>"
+instance Exception TimeUp where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
+
+-- | 'try', but not for asynchronous exceptions (a time limit, a thread
+-- killed), which aren't the action's failure: they go on.
+trySync :: IO a -> IO (Either SomeException a)
+trySync act = try act >>= \case
+  Left e | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+  r -> pure r
 
 -- | An exception's message, without the context GHC adds to it from 9.10
 -- (a backtrace of the runtime's own code, which tells a reader nothing).
