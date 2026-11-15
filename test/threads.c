@@ -60,15 +60,26 @@ static atomic_int wrong = 0;
 static void ask(int want)
 {
     int expect = want < most ? want : most;
-    if (pandoc_set_num_threads(want) != expect) atomic_fetch_add(&wrong, 1);
+    int got = pandoc_set_num_threads(want);
+    if (got != expect) {
+        atomic_fetch_add(&wrong, 1);
+        printf("      set_num_threads(%d): %d, not %d\n", want, got, expect);
+    }
 }
 
 static void convert(void)
 {
     const char *opts = "{\"from\": \"markdown\", \"to\": \"html\"}";
     pandoc_result *r = pandoc_convert(opts, strlen(opts), "*x*", 3);
-    if (!r || r->status != 0 || strcmp(r->output, "<p><em>x</em></p>\n") != 0)
+    if (!r || r->status != 0 || strcmp(r->output, "<p><em>x</em></p>\n") != 0) {
         atomic_fetch_add(&wrong, 1);
+        /* (what went wrong: this has failed once in CI, on macOS x86-64) */
+        if (!r) printf("      convert: no result\n");
+        else if (r->status != 0)
+            printf("      convert: status %d, %s: %s\n", r->status,
+                   r->error_kind ? r->error_kind : "?", r->error_message ? r->error_message : "?");
+        else printf("      convert: output \"%s\"\n", r->output);
+    }
     pandoc_result_free(r);
 }
 
