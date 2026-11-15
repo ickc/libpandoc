@@ -74,7 +74,10 @@ nothing (the reading ones, and those that only shape the output: `to`,
 writers, no `pdf`), input given rather than files, and pandoc's sandbox
 on. Anything else fails with a `PandocOptionError` naming it: filters,
 templates, output files, `data-dir`, `bibliography`, `csl`, ... So only
-pandoc's own code runs, and it reads nothing but the input. `citeproc` is
+pandoc's own code runs, and it reads nothing but the input and pandoc's
+own data: not the user data directory's templates, reference documents,
+abbreviations, translations or styles (1.10). (`PANDOC_DATA_DIRS`'s
+directories are left out only in part: the header says which.) `citeproc` is
 allowed (1.8), sandboxed as below, with the references in the document's
 metadata. Wasm filters' calls to pandoc are always untrusted. The list is
 `src/LibPandoc/Untrusted.hs`.

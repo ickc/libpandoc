@@ -72,7 +72,8 @@ extern "C" {
  * broken standard output; an "Exception"'s message has no backtrace; a
  * filter whose fn is NULL is an error; pandoc_read_many returns its
  * messages in the log instead of printing them; 1.10: "timeout" and the
- * error kind "Timeout").
+ * error kind "Timeout"; "untrusted" reads nothing of the user data
+ * directory).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -172,7 +173,17 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * is on. "citeproc" is allowed (from 1.8), sandboxed as below, but not
  * the options naming its files ("bibliography", "csl",
  * "citation-abbreviations"): references in the document's metadata work.
- * Anything else fails with a PandocOptionError naming it. A host sets
+ * Anything else fails with a PandocOptionError naming it. pandoc reads
+ * nothing of the user data directory then (from 1.10; before, its
+ * templates and the like): templates and their partials, reference
+ * documents, abbreviations, translations and CSL styles are pandoc's own.
+ * Directories in PANDOC_DATA_DIRS (pandoc's system data directories) are
+ * left out only where pandoc reads in its sandbox (reference documents,
+ * translations, citeproc's styles): the template, its partials, dzslides'
+ * template and the abbreviations are read before it, where the process's
+ * environment names them, and libpandoc doesn't change the environment
+ * (other threads read it). A host for which those must stay out too
+ * unsets PANDOC_DATA_DIRS before it starts threads. A host sets
  * "untrusted": true on whatever such code passes (replacing its own
  * "untrusted"), and the list lives here, the same for every host.
  * "untrusted" is about options: it sets no time limit. A host sets one
@@ -332,7 +343,8 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * --sandbox, readers read no files (LaTeX's \input, RST's include, ...):
  * for untrusted texts. "untrusted": true, as for pandoc_convert, accepts only
  * the reading options that read no files (not data-dir, resource-path,
- * abbreviations), for untrusted code. Each text is prepared as pandoc prepares its
+ * abbreviations), for untrusted code; the abbreviations are then pandoc's
+ * own, or PANDOC_DATA_DIRS's (as for pandoc_convert). Each text is prepared as pandoc prepares its
  * input (tabs expanded unless preserve-tabs, carriage returns dropped).
  *
  * "timeout" in "options" (from 1.10), as for pandoc_convert, is the whole

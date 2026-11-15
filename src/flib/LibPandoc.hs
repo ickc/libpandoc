@@ -75,7 +75,8 @@ import Foreign.C
 import GHC.Generics
 import qualified GHC.Foreign as GHC
 import GHC.IO.Encoding (TextEncoding, getFileSystemEncoding, utf8)
-import System.Directory (doesFileExist, executable, findExecutable, getPermissions)
+import System.Directory (createDirectory, doesFileExist, executable, findExecutable,
+                         getPermissions)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
@@ -168,11 +169,11 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
           Left "untrusted code gives pandoc_convert its input"
         v <- untrusted Convert v1
         v' <- callbackFilters (fromIntegral nFilters) v
-        (,) limit <$> Aeson.parseEither Aeson.parseJSON v'
+        (,,) limit (isUntrusted v1) <$> Aeson.parseEither Aeson.parseJSON v'
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (limit, f :: Opt -> Opt) -> limited limit $
-      convert (withHooks filters (fromIntegral nFilters)) (f defaultOpts) input
+    Right (limit, noUserData, f :: Opt -> Opt) -> limited limit $
+      convert (withHooks filters (fromIntegral nFilters)) noUserData (f defaultOpts) input
 
 -- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
 isUntrusted :: Aeson.Value -> Bool
@@ -375,7 +376,7 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   input <- peekInput inPtr inLen hasIn
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
-    Right opts -> convert (withHooks filters (fromIntegral nFilters)) opts input
+    Right opts -> convert (withHooks filters (fromIntegral nFilters)) False opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -771,10 +772,17 @@ renderFormat (Format.FlavoredFormat name diff) =
 
 -- | Run a conversion as the pandoc CLI would, but with @input@ (if given) as
 -- stdin and stdout captured, filters routed through the engine
--- ('routeFilters'), and the Lua engine adapted by @engineWith@.
-convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Opt
+-- ('routeFilters'), and the Lua engine adapted by @engineWith@. With
+-- @noUserData@ (untrusted options), the user data directory is an empty
+-- one: templates and their partials, abbreviations, reference documents,
+-- translations, CSL styles come from pandoc's own data. (Not those in
+-- @PANDOC_DATA_DIRS@'s directories that pandoc reads before its sandbox,
+-- through the process's environment: the template, its partials,
+-- dzslides' template, the abbreviations. Only the environment says where
+-- they are, which other threads read: the header.)
+convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Bool -> Opt
         -> Maybe B.ByteString -> IO Result
-convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
+convert engineWith noUserData opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
   let stdinFile = tmp </> "stdin"
       -- an extension, so that zip output (chunkedhtml) is written as bytes
       -- rather than extracted into a directory, as for stdout
@@ -785,6 +793,8 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
                     Just fs | not (null fs) -> fs == ["-"]
                     _ -> True
       toStdout = maybe True (== "-") (optOutputFile opts)
+      noData = tmp </> "data"
+  when noUserData $ createDirectory noData
   inputFiles <- case input of
     Nothing -> pure (optInputFiles opts)
     Just bytes -> do
@@ -799,6 +809,7 @@ convert engineWith opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
   let opts' = opts
         { optInputFiles = inputFiles
         , optOutputFile = if toStdout then Just stdoutFile else optOutputFile opts
+        , optDataDir = if noUserData then Just noData else optDataDir opts
         , optLogFile = Just logFile
           -- messages are returned in the log rather than printed on stderr
         , optVerbosity = ERROR
