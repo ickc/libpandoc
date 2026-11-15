@@ -202,6 +202,8 @@ jobs:
           echo "WASM_FILTERS=$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" >> "$GITHUB_ENV"
           (cd wasm && npm ci)
           WASM_FILTERS="$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" node --test wasm/test-wasm-filter.mjs
+          # pandoc_main, a wasm filter on its command line too
+          WASM_FILTERS="$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" node --test wasm/test-main.mjs
 
       - name: Test in Pyodide
         run: |

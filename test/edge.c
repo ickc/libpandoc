@@ -150,6 +150,16 @@ int main(int argc, char **argv)
         printf("      %.120s\n", out);
     }
 
+    /* pandoc_main --help: the usage message names argv[0], as the command
+     * names itself (from 1.11; before, the host process's name) */
+    {
+        char out[16384];
+        const char *help[] = {"/usr/bin/mypandoc", "--help"};
+        int st = main_output(2, help, out, sizeof out);
+        check(st == 0 && strncmp(out, "mypandoc [OPTIONS] [FILES]", 26) == 0,
+              "pandoc_main --help: the usage names argv[0]");
+    }
+
     /* an error that isn't pandoc's: its message, without GHC's backtrace */
     {
         const char *tmp = getenv("TMPDIR");

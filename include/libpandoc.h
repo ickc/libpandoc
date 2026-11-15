@@ -77,7 +77,8 @@ extern "C" {
  * directory; filters are told the writer's options: "writer-options",
  * PANDOC_WRITER_OPTIONS; a call failing with "<<loop>>" is made again;
  * 1.11: a conversion's temporary files are removed in libpandoc.wasm too,
- * and a conversion whose temporary directory can't be removed fails).
+ * and a conversion whose temporary directory can't be removed fails;
+ * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0]).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -340,7 +341,8 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
 
 /* The pandoc command, in this process: what running `pandoc` with these
  * arguments would do. argv[0] is the program's name (for pandoc's usage
- * messages). pandoc reads standard input and writes standard output and
+ * messages; --help's from 1.11, before the process's). pandoc reads
+ * standard input and writes standard output and
  * standard error itself, answers informational options (--version,
  * --list-*, -D, --help, ...), and reports errors, all as the command does;
  * the return value is the exit status pandoc would exit with. Arguments
@@ -361,7 +363,22 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  *
  * `lua` as the first argument (or a program named pandoc-lua) runs pandoc
  * as a Lua interpreter, as `pandoc lua` does. A script's os.exit exits the
- * process, as it would pandoc's. `server` is not supported (status 4). */
+ * process, as it would pandoc's. `server` is not supported (status 4).
+ *
+ * Standard input is read once: pandoc closes it when it has read it, as
+ * the command does, so a second call reading it in the same process (or
+ * libpandoc.wasm instance) fails ("handle is closed"); calls naming their
+ * input files can be made one after another.
+ *
+ * In libpandoc.wasm (from 1.11) standard input, output and error are WASI's
+ * descriptors 0, 1 and 2, which the host connects, and the files are those
+ * of the directories it gives. Filters: Lua runs inside; JSON filters can't
+ * (WASI starts no programs: a PandocFilterError, status 83, "libpandoc.wasm
+ * runs no programs"), so a host runs those it can (a wasm filter) as
+ * callback filters through filters_json, as natively, finding them with
+ * {"query": "parse-args"}; a filter whose fn is NULL is the host's import
+ * libpandoc.filter, as for pandoc_convert_filters. No `lua` (status 4),
+ * no PDF (no programs). --version says "Features: -server -lua". */
 LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
                               const char *filters_json, size_t filters_json_len,
                               const pandoc_filter *filters, size_t filters_len);

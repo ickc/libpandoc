@@ -221,6 +221,16 @@ export async function start(module, wasi) {
           withAlloc([input], ([ip, iN]) =>
             take(ex.pandoc_convert_args_filters(argc, argv, ip, iN, arr, n))))),
     readMany: (request) => withAlloc([request], ([p, n]) => take(ex.pandoc_read_many(p, n))),
+    // pandoc_main (libpandoc.wasm 1.11): the pandoc command, argv[0] its
+    // name, on the host's WASI standard input, output and error; its exit
+    // status. filtersJson (or null) and fns as pandoc_main's filters_json
+    // and filters.
+    main: (args, filtersJson = null, fns = []) => {
+      if (!ex.pandoc_main) throw new InputError("libpandoc.wasm before 1.11 has no pandoc_main");
+      return withFilters(fns, (arr, n) =>
+        withArgv(args, (argc, argv) =>
+          withAlloc([filtersJson], ([fp, fN]) => ex.pandoc_main(argc, argv, fp, fN, arr, n))));
+    },
     query: (q) => withAlloc([q], ([p, n]) => take(ex.pandoc_query(p, n))),
     // pandoc's working directory (wasi-libc's; "/" at first), against which
     // relative paths resolve: 0, or -1 if there is no such directory (or
@@ -280,6 +290,15 @@ export async function start(module, wasi) {
     },
     query(q) {
       return JSON.parse(str(ok(abi.query(JSON.stringify(q))).output));
+    },
+    /** The pandoc command: what `pandoc ...args` does, on the host's
+     *  standard input, output and error (node.mjs: the process's), with
+     *  pandoc's exit status as the result. `filters`: JS functions (as
+     *  convertWithFilters takes them, bytes only: a wasm filter's) that
+     *  replace those of the arguments, given as `filtersJson`, a list as
+     *  the "filters" option naming them {type: "callback", index: i}. */
+    main(args, { filtersJson = null, filters = [] } = {}) {
+      return abi.main(["pandoc", ...args], filtersJson === null ? null : JSON.stringify(filtersJson), filters);
     },
     readMany(inputs, options = {}) {
       return JSON.parse(str(ok(abi.readMany(JSON.stringify({ options, inputs }))).output));

@@ -48,7 +48,9 @@ export async function load(source, { preopens } = {}) {
     const wasi = new WASI({
       version: "preview1",
       args: ["libpandoc"],
-      env: { TMPDIR: "/tmp" },
+      // PATH: none (pandoc looks for programs, such as a PDF engine, on it;
+      // WASI runs none)
+      env: { TMPDIR: "/tmp", PATH: "" },
       preopens: { "/tmp": tmp, ...preopens },
       returnOnExit: true,
     });

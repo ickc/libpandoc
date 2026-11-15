@@ -35,7 +35,8 @@ export async function load(source, { files = {}, tmp: tmpDir = null, preopens = 
   ];
   if (tmpDir && Object.keys(files).length) throw new Error("files go in the in-memory /tmp: not with tmp");
   // debug: false, or the shim logs every call (its default when omitted)
-  const wasi = new WASI(["libpandoc"], ["TMPDIR=/tmp"], fds, { debug: false });
+  // PATH: none (pandoc looks for programs on it; WASI runs none)
+  const wasi = new WASI(["libpandoc"], ["TMPDIR=/tmp", "PATH="], fds, { debug: false });
   const module = source instanceof WebAssembly.Module
     ? source
     : source instanceof URL || typeof source === "string"

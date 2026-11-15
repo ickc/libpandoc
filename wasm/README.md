@@ -12,10 +12,29 @@ node --test wasm/test.mjs          # Node.js: convert, query, read_many, Lua and
 PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyodide
 ```
 
-- **Exports:** `pandoc_init`, `pandoc_convert`, `pandoc_convert_args`,
-  `pandoc_convert_filters`, `pandoc_convert_args_filters`, `pandoc_read_many`,
-  `pandoc_query`, `pandoc_result_free`, `pandoc_buffer_set`, `malloc`, `free`.
-  Call `_initialize` (WASI's reactor start), then `pandoc_init`.
+- **Exports:** `pandoc_init`, `pandoc_abi_version`, `pandoc_convert`,
+  `pandoc_convert_args`, `pandoc_convert_filters`,
+  `pandoc_convert_args_filters`, `pandoc_read_many`, `pandoc_query`,
+  `pandoc_main` (1.11), `pandoc_result_free`, `pandoc_buffer_set`,
+  `malloc`, `free`, `chdir` (wasi-libc's: pandoc's working directory).
+  Call `_initialize` (WASI's reactor start), then `pandoc_init`. Not
+  `pandoc_set_num_threads` (one thread) nor `pandoc_shutdown`.
+- **The command:** `pandoc_main` runs `pandoc ARGS` in the module, on WASI's
+  standard input, output and error (the host's to connect: `node.mjs`'s
+  are the process's, `browser.mjs`'s an empty input and the console), and
+  returns pandoc's exit status; pandoc prints its own warnings and errors,
+  honours `--quiet`, `--verbose`, `--log`, `--fail-if-warnings`, writes
+  `-o` into a directory the host gave. `core.mjs`: `pandoc.main(args)`.
+  Compared with the `pandoc` command (`test-main.mjs`, with `PANDOC` set):
+  the same output, messages and exit status, but `--version`'s
+  `Features: -server -lua` and empty user data directory. Lua filters run
+  inside; JSON filters fail (status 83: no programs), so a host runs a
+  wasm filter named `-F x.wasm` itself: `{"query": "parse-args"}` gives
+  the filters, and those it runs go to `pandoc_main` as callbacks in
+  `filters_json` (`test-main.mjs` does it with `wasm-filter.mjs`). One
+  instance runs commands one after another, but standard input once
+  (pandoc closes it).
+
 - **Callback filters:** a `pandoc_filter` whose `fn` is `NULL` is the host's
   import `libpandoc.filter(userdata, doc, doc_len, context, context_len, out)`,
   which answers with `pandoc_buffer_set` as a `pandoc_filter_fn` does. A
@@ -33,7 +52,7 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `Map` in memory, emptied by `close()`. A closed instance throws a
   `StoppedError`.
 - **Not in it:** threads (`read_many` reads one after another), JSON filters
-  (WASI can't start processes), `pandoc_main`, `pandoc lua`, PDF, HTTP.
+  (WASI can't start processes), `pandoc lua`, PDF, HTTP.
 - **Engines** (tested 2026-09-28 with Playwright's browsers,
   `wasm/test-browser.mjs`): it needs wasm's exnref exception handling (the
   `try_table` opcode, 0x1f), which pandoc's Lua is compiled with, as in
@@ -110,6 +129,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   pandoc's working directory (wasi-libc's, `/` at first), against which
   relative paths resolve: libpandoc-python sets it to Python's.
 - **Tests** (`npm install` in `wasm/` first): `test.mjs` (Node),
+  `test-main.mjs` (`pandoc_main` in Node; with `PANDOC`, compared with the
+  command; with `WASM_FILTERS`, `-F x.wasm`),
   `test-browser.mjs` (Chromium, Firefox, WebKit with Playwright),
   `test-pyodide.mjs` (Python filters in Pyodide), `test-pyodide-suite.mjs`
   (libpandoc-python's tests in Pyodide; `SHIM=1` through the shared

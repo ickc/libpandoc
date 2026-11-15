@@ -79,7 +79,7 @@ import GHC.IO.Encoding (TextEncoding, getFileSystemEncoding, utf8)
 import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, executable,
                          findExecutable, getPermissions, listDirectory, pathIsSymbolicLink,
                          removeDirectory, removeFile)
-import System.Environment (getEnvironment, lookupEnv)
+import System.Environment (getEnvironment, lookupEnv, withProgName)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO (hClose, hFlush, hPutStrLn, stderr, stdout)
@@ -304,6 +304,12 @@ withHooks filters n opts engine = engine { engineApplyFilter = apply }
 -- only Lua filters ("LibPandoc.WriterOptions").
 runJSONFilter :: Opt -> Environment -> [String] -> FilePath -> Pandoc
               -> IO (Either PandocError Pandoc)
+#if defined(wasm32_HOST_ARCH)
+-- WASI starts no programs: a filter that is one is the host's to run, as a
+-- callback filter (and a wasm filter compiled for WASI is one)
+runJSONFilter _ _ _ f _ = pure $ Left $ PandocFilterError (T.pack f)
+  "libpandoc.wasm runs no programs: a JSON filter can't run inside it (a host may run it, as a callback filter)"
+#else
 runJSONFilter opts fenv args f doc = do
   exists <- doesFileExist f
   isExecutable <- if exists
@@ -343,6 +349,7 @@ runJSONFilter opts fenv args f doc = do
         Right (ExitSuccess, out) -> either (failed . T.pack) Right (Aeson.eitherDecode' out)
         Right (ExitFailure ec, _) ->
           failed ("Filter returned error status " <> T.pack (show ec))
+#endif
 
 -- | Call callback filter @k@ on a document, as a JSON filter is run, and
 -- also tell it the input and output formats (with extensions), which JSON
@@ -689,6 +696,9 @@ hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
           case res of
             -- as pandoc-cli's, which says what it was built with
             Left VersionInfo -> versionInfo features (Just (T.unpack (engineName engine))) ""
+            -- (--help names the program by the process's name: here argv[0],
+            -- set for the process while it prints; only --help reads it)
+            Left Help -> withProgName prg (handleOptInfo engine Help)
             Left info -> handleOptInfo engine info
             Right opts0 -> do
               let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
