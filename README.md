@@ -41,7 +41,9 @@ JavaScript on libpandoc.wasm ([`wasm/`](wasm/README.md)).
 The Haskell runtime starts on first use, without installing signal
 handlers, and every Haskell exception becomes an error result (or
 `pandoc_main`'s status): a pandoc error, a bad option or argument, or a
-broken pipe doesn't end the host process. What can still end it: running out
+broken pipe doesn't end the host process (SIGPIPE, from a JSON filter or
+another program pandoc writes to that exits early, is blocked in the
+threads that run pandoc, 1.12: at `pandoc_init`). What can still end it: running out
 of memory (the runtime can't recover from that inside a library, and there
 is no memory limit per call: below), and a Lua filter's or script's
 `os.exit`; and what stays the host's (Lua's `print` writes to standard
@@ -67,7 +69,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.11 now; the embedded pandoc's version and its
+are this C interface's own, 1.12 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -224,7 +226,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.11 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.12 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the

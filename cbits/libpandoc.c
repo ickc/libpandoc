@@ -46,16 +46,62 @@ static atomic_int active_calls = 0;
 static atomic_int expanded = 0;
 
 #if defined(__wasm__)
-static int depth = 0; /* one thread */
+#define THREAD_LOCAL /* one thread */
 #elif defined(_MSC_VER)
-static __declspec(thread) int depth = 0;
+#define THREAD_LOCAL __declspec(thread)
 #else
-static _Thread_local int depth = 0;
+#define THREAD_LOCAL _Thread_local
 #endif
+static THREAD_LOCAL int depth = 0;
+
+/* SIGPIPE: a program pandoc writes to that exits without reading it all
+ * (a JSON filter, a PDF engine, Lua's pandoc.pipe) makes the write raise
+ * SIGPIPE, which ends a process that hasn't ignored it. GHC's programs
+ * ignore it (pandoc's does), but libpandoc's runtime installs no signal
+ * handlers, so the host's disposition holds. Instead SIGPIPE is blocked in
+ * the threads that run pandoc: a host's thread while it is inside a call,
+ * and the runtime's own threads, which inherit it from the thread that
+ * starts them (start_runtime, pandoc_set_num_threads, a call). The write
+ * then fails with EPIPE, which pandoc handles; a SIGPIPE such a write left
+ * pending on the host's thread is taken before its mask is restored.
+ * Programs pandoc starts inherit the mask (the process library keeps it),
+ * as from Python's process they inherit SIGPIPE ignored. */
+#if defined(__wasm__) || defined(_WIN32)
+typedef int sigpipe_state;
+static void block_sigpipe(sigpipe_state *s) { (void)s; }
+static void restore_sigpipe(const sigpipe_state *s) { (void)s; }
+#else
+#include <pthread.h>
+#include <signal.h>
+typedef struct { int was_blocked; } sigpipe_state;
+static void block_sigpipe(sigpipe_state *s)
+{
+    sigset_t pipe, old;
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe, &old);
+    s->was_blocked = sigismember(&old, SIGPIPE);
+}
+static void restore_sigpipe(const sigpipe_state *s)
+{
+    sigset_t pipe, pending;
+    int sig;
+    if (s->was_blocked) return;
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) sigwait(&pipe, &sig);
+    pthread_sigmask(SIG_UNBLOCK, &pipe, NULL);
+}
+#endif
+static THREAD_LOCAL sigpipe_state call_sigpipe;
 
 static int enter(void)
 {
-    if (pandoc_init() != 0) return -1;
+    if (depth == 0) block_sigpipe(&call_sigpipe);
+    if (pandoc_init() != 0) {
+        if (depth == 0) restore_sigpipe(&call_sigpipe);
+        return -1;
+    }
     if (depth++ == 0 && atomic_fetch_add(&active_calls, 1) >= 1 && !atomic_exchange(&expanded, 1))
         libpandoc_hs_expand_threads();
     return 0;
@@ -63,7 +109,10 @@ static int enter(void)
 
 static void leave(void)
 {
-    if (--depth == 0) atomic_fetch_sub(&active_calls, 1);
+    if (--depth == 0) {
+        atomic_fetch_sub(&active_calls, 1);
+        restore_sigpipe(&call_sigpipe);
+    }
 }
 
 /* A workaround for a bug of GHC's runtime, to remove when libpandoc's GHC
@@ -146,7 +195,10 @@ static void start_runtime(void)
 #endif
                     ;
 #endif
+    sigpipe_state s;
+    block_sigpipe(&s); /* the runtime's threads keep SIGPIPE blocked */
     hs_init_ghc(&argc, &argv, conf);
+    restore_sigpipe(&s);
     init_status = 0;
 }
 
@@ -322,8 +374,13 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
 
 int pandoc_set_num_threads(int n)
 {
+    sigpipe_state s;
+    int r;
     if (pandoc_init() != 0) return 0;
-    return libpandoc_hs_set_num_threads(n);
+    block_sigpipe(&s); /* the threads it may start keep SIGPIPE blocked */
+    r = libpandoc_hs_set_num_threads(n);
+    restore_sigpipe(&s);
+    return r;
 }
 
 int pandoc_main(int argc, const char *const *argv,

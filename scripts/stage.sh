@@ -28,7 +28,7 @@ cp test/smoke.c "$out/share/libpandoc/examples/"
 # pkg-config, relocatable (${pcfiledir}): `pkg-config --cflags --libs libpandoc`
 if [[ "$(uname -s)" == Linux || "$(uname -s)" == Darwin ]]; then
 	mkdir -p "$out/lib/pkgconfig"
-	# the C interface's version (pkg-config --atleast-version=1.11), not the
+	# the C interface's version (pkg-config --atleast-version=1.12), not the
 	# cabal package's; pandoc's is in the description
 	version=$(awk '/#define LIBPANDOC_ABI_VERSION_MAJOR/ {M=$3} /#define LIBPANDOC_ABI_VERSION_MINOR/ {m=$3} END {print M "." m}' include/libpandoc.h)
 	cat >"$out/lib/pkgconfig/libpandoc.pc" <<-EOF

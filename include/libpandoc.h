@@ -120,12 +120,13 @@ extern "C" {
  * PANDOC_WRITER_OPTIONS; a call failing with "<<loop>>" is made again;
  * 1.11: a conversion's temporary files are removed in libpandoc.wasm too,
  * and a conversion whose temporary directory can't be removed fails;
- * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0]).
+ * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0];
+ * 1.12: SIGPIPE is blocked in the threads that run pandoc (pandoc_init)).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 11
+#define LIBPANDOC_ABI_VERSION_MINOR 12
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -198,7 +199,19 @@ LIBPANDOC_API int pandoc_set_num_threads(int n);
 /* Start the Haskell runtime. Safe to call more than once and from any
  * thread; every other function calls it implicitly. The runtime is started
  * without installing signal handlers, so the host keeps SIGINT etc. It
- * cannot be restarted after pandoc_shutdown. Returns 0 on success. */
+ * cannot be restarted after pandoc_shutdown. Returns 0 on success.
+ *
+ * SIGPIPE (from 1.12; not on Windows nor in libpandoc.wasm): the threads
+ * that run pandoc have it blocked, so that a program pandoc writes to and
+ * that exits without reading it all (a JSON filter, a PDF engine, Lua's
+ * pandoc.pipe) is an error and doesn't end the host (as it ended a host
+ * leaving SIGPIPE at its default, before). These are a host's thread while
+ * it is inside a call (a SIGPIPE raised on it meanwhile is discarded, and
+ * its mask restored when the call returns; a callback filter runs with it
+ * blocked too) and the runtime's own threads. The host's disposition of
+ * SIGPIPE is left as it is. Programs pandoc starts inherit it blocked, as
+ * from a host that ignores it (Python, Rust, Julia) they inherit it
+ * ignored. */
 LIBPANDOC_API int pandoc_init(void);
 
 /* Stop the Haskell runtime. Optional, and seldom worth it (the process's

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <libpandoc.h>
 #ifndef _WIN32
+#include <pthread.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -69,6 +70,29 @@ static int broken_stdout(void)
     return a == 0 && b == 0 ? 42 : 1;
 }
 
+/* The child: SIGPIPE at its default (ending the process, as in a C
+ * program), a JSON filter that exits without reading its input (1 MB, more
+ * than a pipe holds): the filter's error, rather than the process ended by
+ * SIGPIPE (before 1.12); and the thread's signal mask as it was. 42 if so.
+ * (Found by fuzz/.) */
+static int filter_exits(void)
+{
+    signal(SIGPIPE, SIG_DFL);
+    size_t n = 1 << 20;
+    char *doc = malloc(n);
+    if (!doc) return 2;
+    memset(doc, 'x', n);
+    const char *o = "{\"from\":\"markdown\",\"to\":\"html\",\"filters\":[\"false\"]}";
+    pandoc_result *r = pandoc_convert(o, strlen(o), doc, n);
+    sigset_t mask;
+    pthread_sigmask(SIG_BLOCK, NULL, &mask);
+    int ok = r && r->status != 0 && has(r->error_kind, "PandocFilterError") && !sigismember(&mask, SIGPIPE);
+    show(r);
+    pandoc_result_free(r);
+    free(doc);
+    return ok ? 42 : 1;
+}
+
 /* what pandoc_main writes to standard output, in buf */
 static int main_output(int argc, const char *const *argv, char *buf, size_t size)
 {
@@ -101,6 +125,7 @@ int main(int argc, char **argv)
     write_file("edge-in.md", "*x*\n");
 #ifndef _WIN32
     if (argc > 1 && strcmp(argv[1], "broken-stdout") == 0) return broken_stdout();
+    if (argc > 1 && strcmp(argv[1], "filter-exits") == 0) return filter_exits();
 #endif
     pandoc_result *r;
     const char *md = "*x*";
@@ -135,6 +160,16 @@ int main(int argc, char **argv)
         int st = system(cmd);
         check(WIFEXITED(st) && WEXITSTATUS(st) == 42,
               "pandoc_main: a broken pipe on standard output returns pandoc's status (0)");
+    }
+
+    /* a JSON filter that exits without reading its input, SIGPIPE at its
+     * default: the filter's error, not the process ended (in a child) */
+    {
+        char cmd[4096];
+        snprintf(cmd, sizeof cmd, "\"%s\" filter-exits", argv[0]);
+        int st = system(cmd);
+        check(WIFEXITED(st) && WEXITSTATUS(st) == 42,
+              "a JSON filter that exits without reading its input: its error, not SIGPIPE");
     }
 
     /* pandoc_main --version: as the command's, with its features and
