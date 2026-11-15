@@ -119,6 +119,7 @@ import Text.Pandoc.Version (pandocVersionText)
 
 import LibPandoc.Query (query)
 import LibPandoc.Untrusted (Call (..), untrusted, untrustedQuery)
+import LibPandoc.WriterOptions (writerOptionsJSON, writerOptionsVariable)
 import LibPandoc.Result
 
 foreign export ccall "libpandoc_hs_convert"
@@ -297,7 +298,8 @@ withHooks filters n opts engine = engine { engineApplyFilter = apply }
 
 -- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
 -- interpreter by file extension, the same environment), and also tell it
--- the input and output formats.
+-- the input and output formats, and the writer's options, as pandoc tells
+-- only Lua filters ("LibPandoc.WriterOptions").
 runJSONFilter :: Opt -> Environment -> [String] -> FilePath -> Pandoc
               -> IO (Either PandocError Pandoc)
 runJSONFilter opts fenv args f doc = do
@@ -326,6 +328,8 @@ runJSONFilter opts fenv args f doc = do
       let env' = ("PANDOC_VERSION", T.unpack pandocVersionText)
                : ("PANDOC_READER_OPTIONS",
                   UTF8.toStringLazy (Aeson.encode (envReaderOptions fenv)))
+               : ("PANDOC_WRITER_OPTIONS",
+                  UTF8.toStringLazy (writerOptionsVariable (envWriterOptions fenv)))
                : ("PANDOC_INPUT_FORMAT", T.unpack (inputFormat opts))
                : ("PANDOC_OUTPUT_FORMAT", T.unpack (outputFormat opts))
                : env
@@ -340,7 +344,7 @@ runJSONFilter opts fenv args f doc = do
 
 -- | Call callback filter @k@ on a document, as a JSON filter is run, and
 -- also tell it the input and output formats (with extensions), which JSON
--- filters aren't told.
+-- filters aren't told, and the writer's options.
 runCallback :: Ptr () -> Int -> Opt -> Environment -> [String] -> Pandoc
             -> IO (Either T.Text Pandoc)
 runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf -> do
@@ -349,7 +353,8 @@ runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf ->
         [ "format" .= listToMaybe args
         , "input-format" .= inputFormat opts
         , "output-format" .= outputFormat opts
-        , "reader-options" .= envReaderOptions env ]
+        , "reader-options" .= envReaderOptions env
+        , "writer-options" .= writerOptionsJSON (envWriterOptions env) ]
   status <- B.useAsCStringLen docJson $ \(dp, dl) ->
     B.useAsCStringLen context $ \(cp, cl) ->
       callFilter filters (fromIntegral k) dp (fromIntegral dl)

@@ -126,16 +126,21 @@ those directories exist: a container, or a virtual machine.
 pointer and its data), placed among pandoc's own filters in the options as
 `{"type": "callback", "index": i}`. pandoc calls them as it would a JSON
 filter, with the document as JSON, the output format and the reader's
-options, but in process, on the calling thread, and within one conversion:
-what a reader keeps in memory, such as images embedded in a docx, reaches
-the writer. A callback may call libpandoc again, for example to parse a
+and writer's options, but in process, on the calling thread, and within
+one conversion: what a reader keeps in memory, such as images embedded in
+a docx, reaches the writer. A callback may call libpandoc again, for example to parse a
 fragment of text.
 
 JSON filters, and callbacks, are also told the input and output formats
 with extensions (`PANDOC_INPUT_FORMAT=commonmark_x-smart`,
 `PANDOC_OUTPUT_FORMAT=html5+smart`), which pandoc doesn't tell JSON filters
 yet; this follows a proposal to upstream (jgm/pandoc#11016), and will follow
-upstream's names if they differ.
+upstream's names if they differ. And the writer's options (1.10:
+`PANDOC_WRITER_OPTIONS`, a callback's `"writer-options"`), which pandoc
+gives Lua filters only: Lua's fields and values, keyed as pandoc's JSON
+keys the reader's options (`number-sections`, `top-level-division`,
+`math-method`), so that a filter ported from Lua (`-N`,
+`--top-level-division`) finds what it read there.
 
 ```c
 static int shout(void *data, const char *doc, size_t len,

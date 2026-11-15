@@ -65,6 +65,8 @@ test("a JS filter inside the conversion, told the formats", () => {
                "HELLO WORLD\n");
   assert.equal(seen.format, "plain");
   assert.equal(seen["input-format"], "markdown+smart");
+  assert.equal(seen["writer-options"]["wrap-text"], "wrap-auto");
+  assert.equal(seen["writer-options"].template, null);
 });
 
 test("a filter may call pandoc again", () => {

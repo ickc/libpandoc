@@ -73,7 +73,8 @@ extern "C" {
  * filter whose fn is NULL is an error; pandoc_read_many returns its
  * messages in the log instead of printing them; 1.10: "timeout" and the
  * error kind "Timeout"; "untrusted" reads nothing of the user data
- * directory).
+ * directory; filters are told the writer's options: "writer-options",
+ * PANDOC_WRITER_OPTIONS).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -257,7 +258,20 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *              options, else the file names), e.g. "commonmark_x-smart",
  *              "html5+smart". JSON filters aren't told these;
  *            "reader-options": the reader's options, what a JSON filter gets
- *              in PANDOC_READER_OPTIONS.
+ *              in PANDOC_READER_OPTIONS;
+ *            "writer-options": the writer's options (from 1.10), what a JSON
+ *              filter run by libpandoc gets in PANDOC_WRITER_OPTIONS (pandoc
+ *              tells only Lua filters: PANDOC_WRITER_OPTIONS there). Lua's
+ *              fields and values, keyed as the reader's options are
+ *              (kebab-case of pandoc's field names): "number-sections",
+ *              "top-level-division": "top-level-chapter", "number-offset",
+ *              "toc-depth", "wrap-text": "wrap-auto", "math-method" (Lua's
+ *              html_math_method), "variables" (a map of text, lists and
+ *              maps), "template" (true if there is one, else null: not its
+ *              text), ...; not the syntax definitions. In
+ *              PANDOC_WRITER_OPTIONS without "variables" when the whole would
+ *              be longer than 32,000 bytes (an environment variable's limit,
+ *              on Windows).
  * Neither is NUL-terminated, and both are valid only during the call.
  *
  * fn returns 0 and puts the new document, as pandoc's JSON, in out with

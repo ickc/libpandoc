@@ -17,7 +17,7 @@ static void check(int ok, const char *what)
 
 /* Callback filters. userdata counts calls; the context of the last call is
  * kept for checking. */
-static char last_context[4096];
+static char last_context[65536];
 
 static void keep_context(const char *context, size_t len)
 {
@@ -190,6 +190,26 @@ int main(int argc, char **argv)
               "callback filter: context has the formats with extensions");
         pandoc_result_free(r);
 
+        /* the writer's options, keyed as the reader's, with Lua's values */
+        check(strstr(last_context, "\"writer-options\":{") && strstr(last_context, "\"template\":null")
+              && strstr(last_context, "\"number-sections\":false"),
+              "callback filter: context has the writer's options");
+        const char *o7 = "{\"to\": \"latex\", \"standalone\": true, \"number-sections\": true, "
+                         "\"number-offset\": [4, 2], \"top-level-division\": \"chapter\", "
+                         "\"html-math-method\": \"katex\", \"variables\": {\"foo\": \"bar\"}, "
+                         "\"filters\": [{\"type\": \"callback\", \"index\": 0}]}";
+        r = pandoc_convert_filters(o7, strlen(o7), md, strlen(md), fs, 4);
+        const char *wo = strstr(last_context, "\"writer-options\":{");
+        check(r && r->status == 0 && wo && strstr(wo, "\"number-sections\":true")
+              && strstr(wo, "\"number-offset\":[4,2]")
+              && strstr(wo, "\"top-level-division\":\"top-level-chapter\"")
+              && strstr(wo, "\"math-method\":{\"method\":\"katex\"") && strstr(wo, "\"template\":true")
+              && strstr(wo, "\"foo\":\"bar\"") && strstr(wo, "\"toc-depth\":3")
+              && strstr(wo, "\"wrap-text\":\"wrap-auto\""),
+              "callback filter: the writer's options, as given");
+        if (wo) printf("      %.200s\n", wo);
+        pandoc_result_free(r);
+
         const char *o5 = "{\"to\": \"html\", \"filters\": [{\"type\": \"callback\", \"index\": 4}]}";
         r = pandoc_convert_filters(o5, strlen(o5), md, strlen(md), fs, 4);
         check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0,
@@ -238,6 +258,46 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
         remove("envfilter.sh");
         remove("envfilter.out");
+
+        /* and the writer's options, in PANDOC_WRITER_OPTIONS, without the
+         * variables when they would make it too long for an environment
+         * variable (the callback is told them still) */
+        f = fopen("wofilter.sh", "w");
+        fputs("#!/bin/sh\nprintf '%s' \"$PANDOC_WRITER_OPTIONS\" > wofilter.out\ncat\n", f);
+        fclose(f);
+        chmod("wofilter.sh", 0755);
+        const char *ow = "{\"to\": \"latex\", \"number-sections\": true, \"variables\": {\"foo\": \"bar\"}, "
+                         "\"filters\": [\"./wofilter.sh\"]}";
+        r = pandoc_convert(ow, strlen(ow), md, strlen(md));
+        static char wseen[65536];
+        memset(wseen, 0, sizeof wseen);
+        f = fopen("wofilter.out", "r");
+        if (f) { fread(wseen, 1, sizeof wseen - 1, f); fclose(f); }
+        check(r && r->status == 0 && wseen[0] == '{' && strstr(wseen, "\"number-sections\":true")
+              && strstr(wseen, "\"variables\":{") && strstr(wseen, "\"foo\":\"bar\""),
+              "JSON filter: told the writer's options (PANDOC_WRITER_OPTIONS)");
+        printf("      %.120s\n", wseen);
+        pandoc_result_free(r);
+        size_t bign = 40000;
+        char *big = malloc(bign + 300);
+        int n = snprintf(big, bign + 300, "{\"to\": \"latex\", \"number-sections\": true, \"filters\": "
+                         "[\"./wofilter.sh\", {\"type\": \"callback\", \"index\": 0}], "
+                         "\"variables\": {\"big\": \"");
+        memset(big + n, 'x', bign);
+        strcpy(big + n + bign, "\"}}");
+        int calls = 0;
+        pandoc_filter keep[] = {{identity, &calls}};
+        r = pandoc_convert_filters(big, strlen(big), md, strlen(md), keep, 1);
+        memset(wseen, 0, sizeof wseen);
+        f = fopen("wofilter.out", "r");
+        if (f) { fread(wseen, 1, sizeof wseen - 1, f); fclose(f); }
+        check(r && r->status == 0 && strstr(wseen, "\"number-sections\":true") && !strstr(wseen, "\"variables\"")
+              && strstr(last_context, "\"big\":\"xxxx"),
+              "JSON filter: without variables longer than an environment variable may be");
+        pandoc_result_free(r);
+        free(big);
+        remove("wofilter.sh");
+        remove("wofilter.out");
     }
 #endif
 
