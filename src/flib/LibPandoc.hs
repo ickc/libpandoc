@@ -48,7 +48,7 @@ import Control.Concurrent (forkFinally, forkIOWithUnmask, killThread, mkWeakThre
 import Data.Unique (Unique, newUnique)
 import GHC.Clock (getMonotonicTime)
 import System.Mem.Weak (deRefWeak)
-import Control.Monad (unless, when, (<=<))
+import Control.Monad (forM_, unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -76,14 +76,15 @@ import Foreign.C
 import GHC.Generics
 import qualified GHC.Foreign as GHC
 import GHC.IO.Encoding (TextEncoding, getFileSystemEncoding, utf8)
-import System.Directory (createDirectory, doesFileExist, executable, findExecutable,
-                         getPermissions)
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, executable,
+                         findExecutable, getPermissions, listDirectory, pathIsSymbolicLink,
+                         removeDirectory, removeFile)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeBaseName, takeExtension)
 import System.IO (hClose, hFlush, hPutStrLn, stderr, stdout)
-import System.IO.Error (ioeGetHandle, isResourceVanishedError)
-import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
+import System.IO.Error (ioeGetHandle, ioeSetLocation, isResourceVanishedError, modifyIOError)
+import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory, withSystemTempFile)
 import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts, handleOptInfo,
                         defaultOpts,
@@ -793,7 +794,7 @@ renderFormat (Format.FlavoredFormat name diff) =
 -- they are, which other threads read: the header.)
 convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Bool -> Opt
         -> Maybe B.ByteString -> IO Result
-convert engineWith noUserData opts input = withSystemTempDirectory "libpandoc" $ \tmp -> do
+convert engineWith noUserData opts input = withTempDirectory $ \tmp -> do
   let stdinFile = tmp </> "stdin"
       -- an extension, so that zip output (chunkedhtml) is written as bytes
       -- rather than extracted into a directory, as for stdout
@@ -852,6 +853,33 @@ convert engineWith noUserData opts input = withSystemTempDirectory "libpandoc" $
     Right () -> do
       out <- if toStdout then B.readFile stdoutFile else pure B.empty
       pure $ Result out Nothing logJson
+
+-- | A call's temporary directory (in TMPDIR, as temporary's
+-- 'System.IO.Temp.withSystemTempDirectory' makes it), removed afterwards
+-- with all it holds, also when the call fails or is stopped. Failing to
+-- remove it fails the call, so that a document left behind is said, not
+-- kept quietly ("Exception", naming the directory).
+withTempDirectory :: (FilePath -> IO a) -> IO a
+withTempDirectory = bracket
+  (getCanonicalTemporaryDirectory >>= (`createTempDirectory` "libpandoc"))
+  (\dir -> modifyIOError (`ioeSetLocation` ("removing the call's temporary directory " ++ dir))
+                         (removeTree dir))
+
+-- | Remove a directory and what is in it (a symbolic link, not what it
+-- points to). Not the directory package's 'removeDirectoryRecursive' (which
+-- temporary uses, ignoring its failure): under WASI it fails before removing
+-- anything, as it @dup@s the directory's descriptor and WASI has no @dup@
+-- (directory 1.3.10, unix 2.8.8), so libpandoc.wasm kept every call's
+-- files.
+removeTree :: FilePath -> IO ()
+removeTree dir = do
+  names <- listDirectory dir
+  forM_ names $ \name -> do
+    let p = dir </> name
+    link <- pathIsSymbolicLink p
+    isDir <- if link then pure False else doesDirectoryExist p
+    if isDir then removeTree p else removeFile p
+  removeDirectory dir
 
 -- | Run an action and hand the result to C, turning any exception into an
 -- error result: nothing may escape into the host process, as GHC's

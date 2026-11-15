@@ -188,6 +188,11 @@ export async function start(module, wasi) {
   return {
     exports: ex,
     abi,
+    /** Stop this instance: every later call throws a StoppedError (the
+     *  hosts' close() also remove its files). */
+    close() {
+      stopped ??= "libpandoc.wasm: this instance was closed";
+    },
     abiVersion: abi.abiVersion,
     /** Convert with defaults-file options; `input` (a string or bytes) is
      *  the standard input. The output is a string (bytes with `bytes`,

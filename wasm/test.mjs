@@ -1,8 +1,10 @@
 // node --test wasm/test.mjs (after scripts/build-wasm.sh)
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { load as loadInMemory } from "./browser.mjs";
 import { load, PandocError, StoppedError } from "./node.mjs";
 
 const path = process.env.LIBPANDOC_WASM ?? new URL("../dist/wasm/libpandoc.wasm", import.meta.url).pathname;
@@ -151,4 +153,55 @@ test("another instance from this one's compiled module; StoppedError exported", 
   assert.equal(pandoc.convert({ to: "html" }, "*y*"), "<p><em>y</em></p>\n");
   assert.ok(new StoppedError("x") instanceof Error);
   assert.equal(new StoppedError("x").name, "StoppedError");
+});
+
+// each kind of call once, failing ones too: what a call leaves in /tmp
+function everyKind(p) {
+  p.convert({ to: "html" }, "*x*");
+  p.convert({ to: "html", untrusted: true }, "*x*");
+  p.convert({ to: "docx" }, "x", { bytes: true });
+  p.abi.convertArgs(["-t", "html"], "x");
+  p.convertWithFilters({ to: "html" }, "x", [(d) => d]);
+  assert.throws(() => p.convert({ from: "nonsense" }, "x"), PandocError);
+  assert.throws(() => p.convertWithFilters({ to: "html" }, "x", [() => { throw new Error("boom"); }]),
+                PandocError);
+  assert.throws(() => p.convert({ to: "html", timeout: 0.2 }, ">".repeat(20000)),
+                (e) => e.kind === "Timeout");
+}
+
+test("temporary files: a call leaves none, also failed and stopped ones", async () => {
+  const calls = () => readdirSync(pandoc.tmp).filter((n) => n.startsWith("libpandoc"));
+  everyKind(pandoc);
+  for (let i = 0; i < 20; i++) pandoc.convert({ to: "html" }, "x".repeat(10000));
+  assert.deepEqual(calls(), []);
+  // browser.mjs's /tmp, in memory
+  const inMemory = await loadInMemory(pandoc.module);
+  everyKind(inMemory);
+  assert.deepEqual([...inMemory.tmp.keys()], []);
+  inMemory.close();
+  assert.throws(() => inMemory.convert({ to: "html" }, "x"), StoppedError);
+});
+
+test("close: the instance's directory is removed, and later calls are StoppedErrors", async () => {
+  const own = await load(pandoc.module);
+  writeFileSync(join(own.tmp, "mine.txt"), "x");
+  assert.equal(own.convert({ to: "html" }, "*x*"), "<p><em>x</em></p>\n");
+  own.close();
+  assert.equal(existsSync(own.tmp), false);
+  assert.throws(() => own.convert({ to: "html" }, "x"), StoppedError);
+  own.close(); // twice: nothing
+  {
+    using scoped = await load(pandoc.module);
+    var dir = scoped.tmp;
+    assert.equal(existsSync(dir), true);
+  }
+  assert.equal(existsSync(dir), false);
+  // not closed: removed at the process's exit
+  const child = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", `
+    import { load } from ${JSON.stringify(new URL("node.mjs", import.meta.url).href)};
+    const p = await load(${JSON.stringify(path)});
+    p.convert({ to: "html" }, "x");
+    console.log(p.tmp);`], { encoding: "utf8" });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(existsSync(child.stdout.trim()), false);
 });

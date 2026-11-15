@@ -188,6 +188,7 @@ jobs:
         run: |
           source ~/.ghc-wasm/env
           node --version
+          (cd wasm && npm ci)
           node --test wasm/test.mjs
 
       # Rust filters compiled to wasm (libpandoc-rs's examples, WASI

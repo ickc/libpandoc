@@ -22,6 +22,16 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   filter may call libpandoc again.
 - **Files:** pandoc's temporary files go in `/tmp`, which the host must
   provide (a preopened directory, or an in-memory one in the browser).
+  Each call makes a directory there for its input, output and log, and
+  removes it when it ends, also when it fails or runs out of time; a
+  directory it can't remove fails the call. (Before 1.11 every call's
+  stayed: the `directory` package's recursive removal `dup`s a descriptor,
+  which WASI lacks, and the failure was ignored.) `node.mjs` makes `/tmp`
+  a new directory of the system's for each instance (`pandoc.tmp`), and
+  removes it with `close()` (or `using`), else when the instance is
+  garbage-collected, else when the process exits; `browser.mjs`'s is a
+  `Map` in memory, emptied by `close()`. A closed instance throws a
+  `StoppedError`.
 - **Not in it:** threads (`read_many` reads one after another), JSON filters
   (WASI can't start processes), `pandoc_main`, `pandoc lua`, PDF, HTTP.
 - **Engines** (tested 2026-09-28 with Playwright's browsers,

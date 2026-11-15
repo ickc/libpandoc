@@ -75,12 +75,14 @@ extern "C" {
  * messages in the log instead of printing them; 1.10: "timeout" and the
  * error kind "Timeout"; "untrusted" reads nothing of the user data
  * directory; filters are told the writer's options: "writer-options",
- * PANDOC_WRITER_OPTIONS; a call failing with "<<loop>>" is made again).
+ * PANDOC_WRITER_OPTIONS; a call failing with "<<loop>>" is made again;
+ * 1.11: a conversion's temporary files are removed in libpandoc.wasm too,
+ * and a conversion whose temporary directory can't be removed fails).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 10
+#define LIBPANDOC_ABI_VERSION_MINOR 11
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -171,6 +173,11 @@ LIBPANDOC_API int pandoc_abi_version(void);
  *          "-" (as on pandoc's command line), else it's a PandocOptionError
  *          (from 1.9; before, the input was ignored). The same for
  *          pandoc_convert_args's file arguments.
+ *          Input is written to a file (pandoc reads files) in a directory
+ *          of the call's own in TMPDIR, with the output and the log,
+ *          removed when the call ends, however it ends; one that can't be
+ *          removed fails the call, naming it (from 1.11; libpandoc.wasm
+ *          left every call's behind before).
  *
  * Output goes to result->output unless the options set output-file. Captured
  * output has LF line endings unless the options set "eol"; files get

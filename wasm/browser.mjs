@@ -1,5 +1,7 @@
 // libpandoc.wasm in the browser (or any JS engine without node:wasi), with
-// @bjorn3/browser_wasi_shim, as npm's pandoc-wasm uses. /tmp is in memory.
+// @bjorn3/browser_wasi_shim, as npm's pandoc-wasm uses. /tmp is in memory
+// (pandoc.tmp, a Map of its files): each conversion's temporary files are
+// removed from it at the end of the conversion.
 //
 //   import { load } from "./browser.mjs";
 //   const pandoc = await load(new URL("libpandoc.wasm", import.meta.url));
@@ -45,5 +47,11 @@ export async function load(source, { files = {}, tmp: tmpDir = null, preopens = 
     imports: { wasi_snapshot_preview1: wasi.wasiImport },
     initialize: (instance) => wasi.initialize(instance),
   });
-  return { ...pandoc, tmp, module };
+  /** Stop this instance and drop its in-memory /tmp (not a `tmp` given):
+   *  every later call throws a StoppedError. */
+  const close = () => {
+    pandoc.close();
+    tmp.clear();
+  };
+  return { ...pandoc, tmp, module, close, [Symbol.dispose]: close };
 }
