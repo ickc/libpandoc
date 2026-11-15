@@ -205,6 +205,38 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
     }
 
+    /* pandoc_read_many: the readers' messages are in the result's log, as a
+     * conversion's, not on standard error */
+    {
+        const char *rq = "{\"options\": {\"from\": \"latex\"}, "
+                         "\"inputs\": [\"a\", \"\\\\input{edge-no-such-file}\", \"\\\\emph{b}\"]}";
+#ifndef _WIN32
+        fflush(stderr);
+        int saved = dup(2);
+        FILE *f = fopen("edge-err.txt", "wb");
+        if (f) dup2(fileno(f), 2);
+#endif
+        r = pandoc_read_many(rq, strlen(rq));
+#ifndef _WIN32
+        if (f) { dup2(saved, 2); fclose(f); }
+        close(saved);
+        char err[512];
+        read_file("edge-err.txt", err, sizeof err);
+        remove("edge-err.txt");
+        check(err[0] == '\0', "read_many: nothing on standard error");
+        if (err[0]) printf("      %.200s\n", err);
+#endif
+        check(r && r->status == 0 && has(r->log, "CouldNotLoadIncludeFile")
+              && has(r->log, "edge-no-such-file") && has(r->output, "\"Emph\""),
+              "read_many: a reader's warning in the log");
+        if (r) printf("      log: %.120s\n", r->log);
+        pandoc_result_free(r);
+        const char *quiet = "{\"options\": {\"from\": \"markdown\"}, \"inputs\": [\"*a*\", \"b\"]}";
+        r = pandoc_read_many(quiet, strlen(quiet));
+        check(r && r->status == 0 && strcmp(r->log, "[]") == 0, "read_many: no messages, []");
+        pandoc_result_free(r);
+    }
+
     remove("edge-in.md");
     return failures != 0;
 }

@@ -40,13 +40,13 @@ module LibPandoc () where
 import qualified Control.Exception as E
 import Control.Exception (SomeException (..), bracket, evaluate, fromException,
                           displayException, throwIO, try)
-import Control.Concurrent (forkIO, rtsSupportsBoundThreads, setNumCapabilities)
+import Control.Concurrent (forkFinally, rtsSupportsBoundThreads, setNumCapabilities)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
-import Control.Monad.Except (throwError)
+import Control.Monad.Except (catchError, throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson ((.=))
 import qualified Data.Aeson as Aeson
@@ -82,8 +82,8 @@ import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Citeproc (processCitations)
 import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
-                          readFileStrict, runIO, runIOorExplode, runPure, sandbox,
-                          setResourcePath, setUserDataDir)
+                          getLog, readFileStrict, runIO, runIOorExplode, runPure,
+                          sandbox, setResourcePath, setUserDataDir, setVerbosity)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Shared (tabFilter)
@@ -94,7 +94,7 @@ import Text.Pandoc.Extensions (Extension (Ext_citations), disableExtension,
                                extensionsToList, showExtension)
 import Text.Pandoc.Filter (Environment (..), Filter (..))
 import qualified Text.Pandoc.Format as Format
-import Text.Pandoc.Logging (Verbosity (ERROR))
+import Text.Pandoc.Logging (LogMessage, Verbosity (ERROR), encodeLogMessages)
 #if defined(wasm32_HOST_ARCH)
 import Text.Pandoc.Lua (getEngine)
 #else
@@ -386,15 +386,17 @@ hsReadMany ptr len = respond $ do
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (opts, inputs) -> do
-      out <- readMany opts inputs
-      pure $ Result (B.concat ("[" : intersperse "," out ++ ["]"])) Nothing "[]"
+      (out, logs) <- readMany opts inputs
+      pure $ Result (B.concat ("[" : intersperse "," out ++ ["]"])) Nothing
+                    (BL.toStrict (encodeLogMessages logs))
 
 -- | The reader and its options, as 'convertWithOpts' sets them up for a
 -- fragment (not standalone), then every input read with them in its own
 -- thread, which also encodes the result (so that all of the work, reading
 -- being lazy, happens in parallel). A failure is that input's result, as an
--- error object.
-readMany :: Opt -> [T.Text] -> IO [B.ByteString]
+-- error object. pandoc's messages, as a conversion's, are returned (the
+-- setup's, then each input's in order) rather than printed.
+readMany :: Opt -> [T.Text] -> IO ([B.ByteString], [LogMessage])
 readMany opts inputs = do
   -- one text needs no threads (a filter's read_as)
   when (length inputs > 1) hsExpandThreads
@@ -403,12 +405,13 @@ readMany opts inputs = do
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
     (reader, exts) <- getReader flvrd
     abbrevs <- readAbbreviations (optAbbreviations opts)
+    setupLog <- getLog
     -- as Text.Pandoc.App.Input prepares a text input
     let spaces | optPreserveTabs opts
                  || Format.formatName flvrd `elem` ["t2t", "man", "tsv"] = 0
                | otherwise = optTabStop opts
         prepared = tabFilter spaces . T.filter (/= '\r')
-    pure (flvrd, reader, prepared, def
+    pure (setupLog, flvrd, reader, prepared, def
       { readerColumns = optColumns opts
       , readerTabStop = optTabStop opts
       , readerIndentedCodeClasses = optIndentedCodeClasses opts
@@ -419,7 +422,7 @@ readMany opts inputs = do
       , readerStripComments = optStripComments opts
       , readerTypstInputs = optTypstInputs opts
       })
-  (flvrd, reader, prepared, ropts) <- either throwIO pure setup
+  (setupLog, flvrd, reader, prepared, ropts) <- either throwIO pure setup
   -- with "sandbox", as pandoc's --sandbox: a reader reads no file (LaTeX's
   -- \input, RST's include, ...), for texts that aren't trusted
   let readOne t
@@ -427,17 +430,33 @@ readMany opts inputs = do
             (r, _) <- getReader flvrd
             readWith r ropts (prepared t)
         | otherwise = readWith reader ropts (prepared t)
+      -- the document or the error, encoded here, and the messages (also
+      -- those logged before an error)
+      readEncoded t = do
+        (r, logs) <- either throwIO pure <=< runIO $ do
+          prepare
+          r <- (Right <$> readOne t) `catchError` (pure . Left)
+          (,) r <$> getLog
+        out <- evaluate $ BL.toStrict $ either (Aeson.encode . errorValue) Aeson.encode r
+        pure (out, logs)
+      -- whatever happens in the thread, its MVar gets an answer
+      answer v = putMVar v <=< \case
+        Right x -> pure x
+        Left e -> do
+          out <- tryAll (evaluate (BL.toStrict (Aeson.encode (errorValue (toPandocError e)))))
+          pure (either (const failed) id out, [])
+      failed = "{\"error\":{\"kind\":\"Exception\",\"message\":\"(a message that failed)\"}}"
   vars <- mapM (\t -> do
                   v <- newEmptyMVar
-                  _ <- forkIO $ do
-                    r <- try (runIO (prepare >> readOne t))
-                    let value = either (errorValue . toPandocError) (either errorValue Aeson.toJSON) r
-                    putMVar v $! BL.toStrict (Aeson.encode value)
+                  _ <- forkFinally (readEncoded t) (answer v)
                   pure v) inputs
-  mapM takeMVar vars
+  (out, logs) <- unzip <$> mapM takeMVar vars
+  pure (out, setupLog ++ concat logs)
   where
     prepare :: PandocIO ()
     prepare = do
+      -- messages are returned in the log rather than printed on stderr
+      setVerbosity ERROR
       setUserDataDir (optDataDir opts)
       setResourcePath (optResourcePath opts)
     readWith :: PandocMonad m => Reader m -> ReaderOptions -> T.Text -> m Pandoc

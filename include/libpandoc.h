@@ -66,7 +66,8 @@ extern "C" {
  * in effect; input given with input-files that don't name it is an error;
  * pandoc_main decodes its arguments as the command does and returns on a
  * broken standard output; an "Exception"'s message has no backtrace; a
- * filter whose fn is NULL is an error).
+ * filter whose fn is NULL is an error; pandoc_read_many returns its
+ * messages in the log instead of printing them).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -297,7 +298,12 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  *
  * result->output: a JSON array with, for each input, its document as
  * pandoc's JSON, or {"error": {"kind": ..., "message": ...}}. The call itself
- * fails only for a malformed request or an unknown format. */
+ * fails only for a malformed request or an unknown format.
+ *
+ * result->log: pandoc's messages, as a conversion's (the reader's warnings,
+ * such as an include file not found): the setup's, then each input's, in
+ * the order of the inputs (from 1.9; before, they were printed on standard
+ * error, and the log was []). */
 LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t request_len);
 
 /* Ask pandoc for information. query is a JSON object with a "query" key:
