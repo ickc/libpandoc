@@ -36,10 +36,17 @@ newResult r = do
   case resultError r of
     Nothing -> pure ()
     Just (kind, msg) -> do
-      (#poke pandoc_result, error_kind) p . fst =<< mallocNul kind
-      (#poke pandoc_result, error_message) p . fst =<< mallocNul msg
+      (#poke pandoc_result, error_kind) p . fst =<< mallocNul (noNul kind)
+      (#poke pandoc_result, error_message) p . fst =<< mallocNul (noNul msg)
   (#poke pandoc_result, log) p . fst =<< mallocNul (resultLog r)
   pure p
+
+-- | A NUL byte as U+FFFD, in text that C reads up to its first NUL (an
+-- error's message may name a file whose name has one: it read as empty).
+noNul :: B.ByteString -> B.ByteString
+noNul s
+  | B.elem 0 s = B.intercalate (B.pack [0xEF, 0xBF, 0xBD]) (B.split 0 s)
+  | otherwise = s
 
 -- | A malloc'd copy of the bytes followed by a NUL.
 mallocNul :: B.ByteString -> IO (Ptr CChar, Int)

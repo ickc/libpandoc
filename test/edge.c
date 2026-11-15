@@ -213,6 +213,18 @@ int main(int argc, char **argv)
     }
 #endif
 
+    /* an error message naming a file whose name has a NUL: the NUL as
+     * U+FFFD, not the end of the message (before, it was empty; found by
+     * fuzz/) */
+    {
+        const char *opts = "{\"to\": \"html\", \"log-file\": \"\\u0000\"}";
+        r = pandoc_convert(opts, strlen(opts), md, strlen(md));
+        check(r && r->status != 0 && r->error_message && strlen(r->error_message) > 3,
+              "an error naming a file whose name has a NUL: the whole message");
+        show(r);
+        pandoc_result_free(r);
+    }
+
     /* input given, and input files that don't name it ("-") */
     {
         const char *files = "{\"to\": \"html\", \"input-files\": [\"edge-in.md\"]}";

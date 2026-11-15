@@ -121,7 +121,8 @@ extern "C" {
  * 1.11: a conversion's temporary files are removed in libpandoc.wasm too,
  * and a conversion whose temporary directory can't be removed fails;
  * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0];
- * 1.12: SIGPIPE is blocked in the threads that run pandoc (pandoc_init)).
+ * 1.12: SIGPIPE is blocked in the threads that run pandoc (pandoc_init);
+ * a NUL in an error's message is U+FFFD).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -145,7 +146,9 @@ typedef struct pandoc_result {
      * stopped by its time limit (libpandoc's, from 1.10: "timeout" at
      * pandoc_convert), or "Exception" for anything else, and the message
      * pandoc would print (for an "Exception", its message only, without
-     * the backtrace GHC 9.10 adds to it: from 1.9). NULL on success. */
+     * the backtrace GHC 9.10 adds to it: from 1.9). A NUL byte in either
+     * (a file name's) is U+FFFD (from 1.12; before, the text ended there).
+     * NULL on success. */
     char *error_kind;
     char *error_message;
     /* NUL-terminated JSON array of pandoc's log messages (warnings and
