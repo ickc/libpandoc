@@ -43,12 +43,15 @@ extern "C" {
  * 1.4: pandoc_set_num_threads; 1.5: pandoc lua in pandoc_main; 1.6:
  * pandoc_read_many's "sandbox"; 1.7: "untrusted"; 1.8: "sandbox" covers
  * citeproc, "untrusted" allows it, and pandoc_set_num_threads may be
- * called from several threads at once and is clamped to the processors).
+ * called from several threads at once and is clamped to the processors;
+ * 1.9: a change of meaning, not only additions: pandoc_set_num_threads
+ * changes nothing once pandoc's threads have grown, and returns the number
+ * in effect).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 8
+#define LIBPANDOC_ABI_VERSION_MINOR 9
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 typedef struct pandoc_result {
@@ -73,15 +76,32 @@ typedef struct pandoc_result {
 
 /* Threads. pandoc runs on a number of threads (Haskell capabilities), so
  * that calls from different host threads, and pandoc_read_many, run in
- * parallel: by default one per logical core the process may use, or
- * LIBPANDOC_NUM_THREADS (read when the runtime starts, as OMP_NUM_THREADS).
- * pandoc_set_num_threads changes it from now on and returns the new number:
- * n, but at least 1 and at most one per processor the process may use
- * (from 1.8, also for LIBPANDOC_NUM_THREADS: more help nobody, and changed
- * while conversions run they crashed GHC's garbage collector). {"query":
- * "num-threads"} tells the current one. It may be called from any thread,
- * also from several at once (from 1.8; before, that could crash or hang
- * GHC's runtime): the calls take turns, and the last one decides. */
+ * parallel. It starts on one, and grows to that number once, the first
+ * time it runs something in parallel: when a call starts while a call from
+ * another thread is running, or pandoc_read_many is given more than one
+ * input. (A call a filter makes from inside a conversion runs on that
+ * conversion's thread, and doesn't count.) Calls made one at a time, from
+ * one thread or several, never grow it.
+ *
+ * The number is the last pandoc_set_num_threads made before the growth,
+ * else LIBPANDOC_NUM_THREADS (as OMP_NUM_THREADS), else one per logical
+ * core the process may use (its CPU affinity); and always at least 1 and
+ * at most one per logical core the process may use (from 1.8: more help
+ * nobody, and changed while conversions ran they crashed GHC's garbage
+ * collector).
+ *
+ * pandoc_set_num_threads(n), before the growth, sets the number and
+ * returns it (n, clamped as above). After the growth it changes nothing and
+ * returns the number in effect (from 1.9; before, it changed the number at
+ * any time, which, while conversions ran, now and then hung GHC's runtime).
+ * So a result other than n means that n was out of range or that pandoc
+ * had already grown: a program choosing the number sets it before it first
+ * calls pandoc from two threads at once, or with several inputs to
+ * pandoc_read_many. {"query": "num-threads"} tells the number in effect,
+ * or, before the growth, the number pandoc will grow to. It may be called
+ * from any thread, also from several at once: the calls take turns, and
+ * the last one before the growth decides. After pandoc_shutdown it
+ * returns 0. */
 LIBPANDOC_API int pandoc_set_num_threads(int n);
 
 /* Start the Haskell runtime. Safe to call more than once and from any
@@ -257,6 +277,8 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *   {"query": "default-template", "format": F}
  *                                         template text
  *   {"query": "num-threads"}             the number of threads pandoc uses
+ *                                         (before it has grown, will use:
+ *                                         pandoc_set_num_threads)
  *   {"query": "parse-args", "args": [...]}
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":

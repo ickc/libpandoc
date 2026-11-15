@@ -34,18 +34,21 @@ handlers, and every Haskell exception becomes an error result: nothing
 exits or crashes the host process. Calls may be made from any thread,
 concurrently, and run in parallel: pandoc runs on one thread per logical
 core the process may use (its CPU affinity), or `LIBPANDOC_NUM_THREADS`
-(threads beyond the first start when first used in parallel, so a program
-converting one document doesn't pay for them)
-(like `OMP_NUM_THREADS`); `pandoc_set_num_threads` changes
-it at run time, from any thread, also from several at once (they take
-turns). Either way, never more than one per logical core the process may
-use: more help nobody, and changed while conversions run they crashed
-GHC's garbage collector. On a 16-core, 32-thread CPU, 16 threads were as
-fast as 32 or faster: set it to the number of physical cores for
-throughput.
+(like `OMP_NUM_THREADS`), or what `pandoc_set_num_threads` says, never
+more than one per logical core the process may use (more help nobody).
+Threads beyond the first start once, when pandoc first runs something in
+parallel (a call while another thread's call runs, or `pandoc_read_many`
+with several inputs), so a program converting one document at a time
+doesn't pay for them. The number is fixed from then on:
+`pandoc_set_num_threads` sets it only before (from any thread, also from
+several at once), and afterwards returns the number in effect (1.9:
+changing it while conversions ran now and then hung GHC's runtime).
+`{"query": "num-threads"}` tells it. On a 16-core, 32-thread CPU, 16
+threads were as fast as 32 or faster: set it to the number of physical
+cores for throughput.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.8 now; the embedded pandoc's version and its
+are this C interface's own, 1.9 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed.
 

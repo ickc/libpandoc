@@ -44,7 +44,7 @@ import Control.Concurrent (forkIO, rtsSupportsBoundThreads, setNumCapabilities)
 import Control.Monad (unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -466,39 +466,52 @@ hsQuery ptr len = respond $ do
     _ -> query json
   pure $ Result out Nothing "[]"
 
--- | @pandoc_set_num_threads@: the number of capabilities, from now on
--- (at least 1, at most one per processor: 'withinProcessors'); returns the
--- new number.
+-- | @pandoc_set_num_threads@: the number of capabilities the runtime grows
+-- to (at least 1, at most one per processor: 'withinProcessors'), until it
+-- has grown ('hsExpandThreads'); returns that number. Once it has grown,
+-- nothing: returns the number in effect. Changing the number of
+-- capabilities while conversions run hangs GHC's runtime now and then (a
+-- thread stuck in 'setNumCapabilities', the others waiting for a
+-- capability: 6 of 44,000 stress runs); the one growth never hung (0 of
+-- 168,000). (The @<<loop>>@ the threads test met in CI is another bug,
+-- which the growth doesn't change: several first conversions at once in
+-- a fresh process.) dev/libpandoc-review and its sequel in the project.
 hsSetNumThreads :: CInt -> IO CInt
 hsSetNumThreads n = withMVar capabilitiesLock $ \() -> do
-  n' <- withinProcessors (fromIntegral n)
-  writeIORef threadsSet (Just n')
   expanded <- readIORef threadsExpanded
-  when (expanded && rtsSupportsBoundThreads) $ setNumCapabilities n'
-  pure (fromIntegral n')
+  fromIntegral <$> if expanded then numThreads else do
+    n' <- withinProcessors (fromIntegral n)
+    writeIORef threadsSet (Just n')
+    pure n'
 
--- | The runtime starts with one capability; the others come when first
--- used in parallel: by 'readMany' with more than one text, or a second
--- caller while one call runs (not a call from inside it, by a filter).
+-- | The runtime starts with one capability; the others come, once, when
+-- first used in parallel: by 'readMany' with more than one text, or a
+-- second caller while one call runs (not a call from inside it, by a
+-- filter). The number is then fixed: 'numThreads' answers it from now on.
 hsExpandThreads :: IO ()
 hsExpandThreads = withMVar capabilitiesLock $ \() -> do
-  done <- atomicModifyIORef' threadsExpanded (\d -> (True, d))
-  -- (not in the non-threaded runtime, which has one: wasm)
-  unless (done || not rtsSupportsBoundThreads) $ setNumCapabilities =<< numThreads
+  done <- readIORef threadsExpanded
+  unless done $ do
+    n <- numThreads
+    writeIORef threadsSet (Just n)
+    writeIORef threadsExpanded True
+    -- (not in the non-threaded runtime, which has one: wasm)
+    when rtsSupportsBoundThreads $ setNumCapabilities n
 
 -- | Held around the whole of 'hsSetNumThreads' and 'hsExpandThreads', so
--- that one changes the number of capabilities at a time and the last
--- request is the number in the end. GHC's 'setNumCapabilities' reads the
--- number of capabilities before it takes its own lock, so a call made
--- while another adds capabilities releases too few of them: the runtime
--- hangs or crashes (GHC 9.10.3, and its master in 2026-11; UPSTREAM.md in
--- the project). Neither body calls back into the host or takes the lock
--- again.
+-- that the number is set either before the growth, which uses it, or after
+-- it, when it changes nothing. (It also kept two calls of GHC's
+-- 'setNumCapabilities' apart, when the number could change at any time:
+-- it reads the number of capabilities before it takes its own lock, so a
+-- call made while another adds capabilities releases too few of them, and
+-- the runtime hangs or crashes: GHC 9.10.3, and its master in 2026-11;
+-- UPSTREAM.md in the project.) Neither body calls back into the host or
+-- takes the lock again.
 capabilitiesLock :: MVar ()
 capabilitiesLock = unsafePerformIO (newMVar ())
 {-# NOINLINE capabilitiesLock #-}
 
--- | The number of capabilities to use: as set, else
+-- | The number of capabilities: as set (or fixed by the growth), else
 -- @LIBPANDOC_NUM_THREADS@, else one per processor this process may use.
 -- The only number 'setNumCapabilities' is given (besides the runtime's
 -- first, 1).
@@ -513,8 +526,9 @@ numThreads = readIORef threadsSet >>= \case
 
 -- | At least 1, at most the number of processors this process may use (its
 -- CPU affinity, as GHC counts them). More capabilities than processors
--- help nobody, and changed while conversions run they crash GHC's parallel
--- garbage collector with @-qi1@ (GHC 9.10.3; UPSTREAM.md in the project).
+-- help nobody, and changed while conversions ran they crashed GHC's
+-- parallel garbage collector with @-qi1@ (GHC 9.10.3; UPSTREAM.md in the
+-- project).
 withinProcessors :: Int -> IO Int
 withinProcessors n = do
   processors <- getNumProcessors
