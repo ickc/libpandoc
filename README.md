@@ -69,7 +69,12 @@ given no input; a callback filter may then run twice.
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
 are this C interface's own, 1.11 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
-are versioned as the pandoc they embed.
+are versioned as the pandoc they embed. The rule: a binding built for
+MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
+large, and checks it when it loads the library (or libpandoc.wasm), against
+the MINOR it relies on; MINOR also marks changes of meaning, listed in the
+header. `pandoc_shutdown` is optional and has hazards (the header): most
+programs never call it.
 
 The ABI doesn't change with pandoc. What changes with pandoc crosses it
 as formats pandoc itself defines: defaults-file options, and the JSON AST
@@ -83,7 +88,8 @@ one more public interface: the Lua engine's `engineApplyFilter`.
 
 `"untrusted": true` (libpandoc's key, not pandoc's) in `pandoc_convert`'s
 options, `pandoc_read_many`'s `"options"` or a `pandoc_query` is for
-options or documents from someone you don't trust. libpandoc then accepts
+options from code you don't trust (a wasm filter calling pandoc): about
+what the options may do, not about documents (below). libpandoc then accepts
 only options that read no files, write none, fetch nothing and run
 nothing (the reading ones, and those that only shape the output: `to`,
 `standalone`, `toc`, `variables`, ...), formats by name (no Lua readers or
@@ -114,6 +120,20 @@ whose instance alone ends; a separate process; a container with a memory
 limit) and a `"timeout"`. A host running a wasm filter passes the
 filter's remaining time as the `"timeout"` of the filter's calls to
 pandoc.
+
+So: for **untrusted options**, `"untrusted": true`; for **untrusted
+documents**, the conversion in libpandoc.wasm (its memory capped, the
+directories it sees chosen: the bindings' directory sandbox), or a
+separate process or container, with a `"timeout"`, and `"sandbox": true`
+(or `"untrusted"`) so that pandoc reads nothing the document names.
+
+"Sandbox" means three things, by where it is (the header lists them):
+`"sandbox": true` in `pandoc_convert`'s options is pandoc's `--sandbox`
+plus citeproc (below); in `pandoc_read_many`'s, readers that read no
+files; and `"sandbox": {"read": [...], "write": [...]}`, the bindings'
+directory sandbox, is the whole conversion in libpandoc.wasm seeing only
+those directories (libpandoc itself refuses an object there, so a host
+without it fails rather than ignores it).
 
 `"sandbox": true` alone is pandoc's `--sandbox`, plus citeproc (1.8):
 pandoc runs its readers and writers in a sandbox, reading only the files

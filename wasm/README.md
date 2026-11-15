@@ -88,6 +88,26 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   sandbox), which refuses them. The in-memory shim has no links;
   `emscripten-fs.mjs` follows the links of the Emscripten filesystem, all
   of which `pyodide.mjs` gives pandoc anyway.
+- **First compile** (wasmtime, as libpandoc-rs's hosts run it; measured
+  2026-11-15, wasmtime 50, 32 cores): the module has 651,882 functions
+  (median 17 bytes), and compiling it takes 17 s and **7.6 GB** of memory
+  at its peak, whatever wasmtime's settings: about 11.7 kB a function.
+  wasmtime's cache then makes later runs load it in a fraction of a second
+  and about 1 GB. Almost all (627,624) are GHC's continuations, reached only
+  through the function table (GHC's wasm code returns to them by index),
+  never called directly, so Binaryen can't inline or merge them: the
+  flags that could (inlining made aggressive, `--merge-similar-functions`)
+  change the count by 0 to 246. `-Oz` (the build's) already removes 86,000
+  of the 738,241 GHC writes (peak 9.1 GB unoptimized). `-O1` to `-O3` and
+  `-Os` compile in 9.5 s instead of 17 at the same peak memory and the
+  same speed, but the module is 107 MB instead of 63 (gzip 19.7 MB instead
+  of 17.1): kept at `-Oz`. Winch, wasmtime's baseline compiler, takes 6.8
+  s and the same memory, and runs pandoc's manual 26% slower (1.30 s
+  against 1.03 s, warm), in wasmtime 49; wasmtime 50 refuses the module
+  with Winch (its exception handling needs typed function references,
+  which Winch lacks there). V8 (Node, browsers) compiles lazily: loading
+  takes 0.2 s, the first conversion of the manual 2 to 4 s, later ones
+  1.2 s.
 - **Memory:** wasm32 has 4 GiB of linear memory at most. The runtime has
   a heap limit (`-M3584m`), with which GHC compacts instead of copying its
   oldest generation: about 80 MB of markdown still converts (to HTML, in

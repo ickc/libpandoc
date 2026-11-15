@@ -39,6 +39,48 @@
  *   - time: a call runs until it ends, unless its options give it a
  *     "timeout" (pandoc_convert, pandoc_read_many), which stops pandoc's own
  *     code, not code in a foreign call (callbacks, Lua).
+ *
+ * Versions: a program or binding built against this header's MAJOR.MINOR
+ * works with a library whose pandoc_abi_version() has the same MAJOR and a
+ * MINOR at least as large, and should check it when it loads the library
+ * (or libpandoc.wasm, which exports pandoc_abi_version too), against the
+ * MINOR whose functions and meanings it relies on. MINOR also marks changes
+ * of meaning (the list at LIBPANDOC_ABI_VERSION).
+ *
+ * Untrusted input, and three meanings of "sandbox":
+ *   - "untrusted": true (libpandoc's option) is about options: from code
+ *     the host doesn't trust (a wasm filter calling pandoc), only those
+ *     that read, write, fetch and run nothing are accepted (details at
+ *     pandoc_convert). It doesn't bound a document's time or memory: for
+ *     documents from someone you don't trust, give the conversion a
+ *     "timeout" and memory of its own (libpandoc.wasm, a separate process,
+ *     a container), with "sandbox" (below) or "untrusted" so that it reads
+ *     nothing the document names;
+ *   - "sandbox": true in pandoc_convert's options is pandoc's --sandbox,
+ *     with citeproc sandboxed too (pandoc_convert);
+ *   - "sandbox": true in pandoc_read_many's options runs each reader in
+ *     pandoc's sandbox: it reads no files;
+ *   - "sandbox": {"read": [...], "write": [...]} is the bindings' (the
+ *     directory sandbox: the whole conversion in libpandoc.wasm, seeing
+ *     only those directories); libpandoc itself refuses it (it expects
+ *     true or false), so a host that lacks it fails rather than ignore it.
+ *
+ * The options are pandoc's defaults-file keys, but not "defaults" (an
+ * unknown option: a defaults file can't name others here), and with no
+ * ${HOME}, ${.} or ${USERDATA} expanded in paths, which a defaults file
+ * read by pandoc has (pandoc_convert_args with --defaults has both).
+ * Relative paths resolve against the process's working directory (in
+ * libpandoc.wasm, wasi-libc's: chdir), as pandoc's do, but for one thing: a
+ * document given as input (not as a file) is read from a file in the
+ * call's temporary directory (pandoc_convert), so RST's include and Org's
+ * #+INCLUDE resolve against that directory and find nothing, and
+ * $sourcefile$ and messages name that file. Unknown keys are refused (a
+ * PandocOptionError); pandoc_read_many uses only the keys that affect
+ * reading and ignores the rest of pandoc's.
+ *
+ * Paths starting with "libpandoc:" are libpandoc's (callback filters,
+ * libpandoc:callback/i, also as a Lua filter's path in the options; JSON
+ * filters and citeproc routed through it): don't name files so.
  */
 #ifndef LIBPANDOC_H
 #define LIBPANDOC_H
@@ -86,6 +128,9 @@ extern "C" {
 #define LIBPANDOC_ABI_VERSION_MINOR 11
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
+/* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
+ * module's memory (six 4-byte fields on wasm32: wasm/core.mjs,
+ * libpandoc-rs's sandbox). */
 typedef struct pandoc_result {
     /* 0 on success, nonzero on failure. */
     int status;
@@ -156,12 +201,18 @@ LIBPANDOC_API int pandoc_set_num_threads(int n);
  * cannot be restarted after pandoc_shutdown. Returns 0 on success. */
 LIBPANDOC_API int pandoc_init(void);
 
-/* Stop the Haskell runtime. Optional; call at most once, at process end. */
+/* Stop the Haskell runtime. Optional, and seldom worth it (the process's
+ * end frees everything); call at most once, at process end, when no call
+ * is running and none will start, from no callback (inside a call). It
+ * cannot be undone: pandoc_init then fails, every function returning a
+ * pandoc_result returns NULL, pandoc_main returns 1 and
+ * pandoc_set_num_threads 0. A call running on another thread meanwhile
+ * may crash or hang the process: libpandoc doesn't wait for calls. Not in
+ * libpandoc.wasm (drop the instance instead). */
 LIBPANDOC_API void pandoc_shutdown(void);
 
-/* LIBPANDOC_ABI_VERSION of the loaded library (major * 1000 + minor). A
- * program built against major.minor works with it if the major is the same
- * and the minor at least as large. */
+/* LIBPANDOC_ABI_VERSION of the loaded library (major * 1000 + minor): see
+ * Versions at the top. */
 LIBPANDOC_API int pandoc_abi_version(void);
 
 /* Convert, like running `pandoc` with a defaults file.
