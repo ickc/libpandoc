@@ -71,6 +71,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Read pins
         run: grep -E '^[A-Z0-9_]+=' pins.env >> "$GITHUB_ENV"
@@ -93,12 +95,14 @@ jobs:
 
       - name: Locate cabal store
         id: store
+        env:
+          CABAL_STORE: ${{ steps.ghc.outputs.cabal-store }}
         run: |
           if [[ $RUNNER_OS == Linux ]]; then
             # ghcup and the cabal store of the container
             echo "path=$HOME/manylinux-cache" >> "$GITHUB_OUTPUT"
           else
-            echo "path=${{ steps.ghc.outputs.cabal-store }}" >> "$GITHUB_OUTPUT"
+            echo "path=$CABAL_STORE" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore cabal store
@@ -111,11 +115,13 @@ jobs:
 
       - name: Build (${{ matrix.image }} container)
         if: runner.os == 'Linux'
+        env:
+          IMAGE: ${{ matrix.container }}
         run: |
           mkdir -p "$HOME/manylinux-cache"
           docker run --rm -v "$PWD:/work" -v "$HOME/manylinux-cache:/cache" -w /work \
             -e CABALOPTS=-j -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-            "${{ matrix.container }}" bash scripts/manylinux.sh dist
+            "$IMAGE" bash scripts/manylinux.sh dist
 
       - name: Build
         if: runner.os != 'Linux'
@@ -179,7 +185,9 @@ jobs:
           if [[ -d dist/lib/libpandoc ]]; then echo "$(find dist/lib/libpandoc -type f | wc -l) bundled libraries"; fi
 
       - name: Archive
-        run: tar -czf libpandoc-${{ matrix.subdir }}.tar.gz -C dist .
+        env:
+          SUBDIR: ${{ matrix.subdir }}
+        run: tar -czf "libpandoc-$SUBDIR.tar.gz" -C dist .
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -193,6 +201,8 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Read pins
         run: grep -E '^[A-Z0-9_]+=' pins.env >> "$GITHUB_ENV"
@@ -297,11 +307,16 @@ jobs:
   # which downstream CI (libpandoc-python) downloads: the native builds,
   # libpandoc.wasm and its bundled JS for Pyodide; with SHA256SUMS, and a
   # build provenance attestation of each (README: "Verifying a download").
-  # Only from main (not from pull requests, forks' included).
+  # Only from main (not from pull requests, forks' included), one run at a
+  # time in order (the workflow's concurrency, and this job's).
   publish:
     needs: [build, wasm]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: publish-continuous
+      cancel-in-progress: false
     permissions:
       contents: write # the release
       id-token: write # the attestation's signing certificate (Sigstore)
