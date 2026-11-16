@@ -13,13 +13,18 @@ cd "$(dirname "$0")/.."
 out=${1:-dist/wasm}
 prefix=${GHC_WASM_PREFIX:-$HOME/.ghc-wasm}
 # shellcheck disable=SC1091
-source <(grep -E '^[A-Z_]+=' pins.env | sed 's/^/export /')
+source <(grep -E '^[A-Z0-9_]+=' pins.env | sed 's/^/export /')
 
 if [[ ! -f $prefix/env ]] || { [[ -f $prefix/.ghc-wasm-meta-rev ]] &&
 	[[ $(cat "$prefix/.ghc-wasm-meta-rev") != "$GHC_WASM_META_REV" ]]; }; then
 	tmp=$(mktemp -d)
-	curl -fL --retry 5 "https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/archive/$GHC_WASM_META_REV/ghc-wasm-meta-$GHC_WASM_META_REV.tar.gz" |
-		tar xz --strip-components=1 -C "$tmp"
+	# by git, so that what runs is the commit pinned (an archive is made
+	# on demand, and checked by nothing). Its setup.sh downloads the wasm
+	# GHC, wasi-sdk, Node, binaryen and wasmtime from the URLs of its
+	# autogen.json, which also has their hashes, but doesn't check them.
+	git -C "$tmp" init -q
+	git -C "$tmp" fetch -q --depth 1 https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta.git "$GHC_WASM_META_REV"
+	git -C "$tmp" checkout -q FETCH_HEAD
 	# setup.sh wipes $PREFIX: keep the cabal store (maybe from a CI cache)
 	if [[ -d $prefix/.cabal ]]; then mv "$prefix/.cabal" "$tmp/.cabal-keep"; fi
 	(cd "$tmp" && PREFIX="$prefix" ./setup.sh)
