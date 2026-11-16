@@ -237,6 +237,25 @@ ghcup, ghc-wasm-meta, npm packages) is pinned by commit, digest or
 SHA-256: the list is at the top of `.github/workflows/ci.yml`, and what a
 pandoc bump must update at the top of `pins.env`.
 
+### Verifying a download
+
+Each release has a `SHA256SUMS` covering its assets, and every asset (and
+`SHA256SUMS`) has a build provenance attestation: signed (Sigstore) by
+this repository's CI workflow, naming the commit and the run that built it.
+
+```sh
+gh release download continuous -R ickc/libpandoc -p 'libpandoc-linux-64.tar.gz' -p SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+gh attestation verify libpandoc-linux-64.tar.gz -R ickc/libpandoc
+```
+
+The checksum only shows the file arrived whole: `SHA256SUMS` comes from the
+same place. The attestation shows it was built by this repository's
+workflow (`--signer-workflow ickc/libpandoc/.github/workflows/ci.yml`
+narrows it to that workflow). `continuous` is replaced on every push to
+`main`, asset by asset: a download made meanwhile may not match
+`SHA256SUMS` (it is uploaded last), and should be tried again. A binding
+that needs a fixed library pins a tagged release by its SHA-256 instead.
 
 ## License
 
