@@ -3,7 +3,8 @@
 // directory with libpandoc-rs's example filters built for wasm32-wasip1
 // (upper.wasm, conversion.wasm, include.wasm).
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { File, PreopenDirectory } from "@bjorn3/browser_wasi_shim";
@@ -49,7 +50,7 @@ test("sees only the directories given", async () => {
   const files = new PreopenDirectory(".", new Map([["part.txt", new File(new TextEncoder().encode("included"))]]));
   const include = await filter("include", { preopens: [files] });
   assert.equal(pandoc.convertWithFilters({ from: "markdown", to: "plain" }, input, [include]).trim(), "included");
-  const blind = await filter("include", { stderr: () => {} });
+  const blind = await filter("include", { preopens: [], stderr: () => {} });
   assert.throws(() => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, input, [blind]),
                 (e) => e instanceof PandocError && e.kind === "PandocFilterError" && /exited with status 3/.test(e.message));
 });
@@ -105,8 +106,51 @@ test("a filter's calls get no files, programs or Lua", async () => {
   assert.match(answers[0].error[1], /not allowed for untrusted code: filters/);
 });
 
-test("a filter calling pandoc needs the pandoc", async () => {
-  await assert.rejects(filter("parse"), /calls pandoc/);
+test("a filter calling pandoc: by default, the pandoc it runs in", async () => {
+  const parse = await filter("parse");
+  assert.equal(pandoc.convertWithFilters({ from: "markdown", to: "html" }, "```parse\n*a*\n```\n", [parse]),
+               "<p><em>a</em></p>\n");
+  // run outside a conversion: it has none
+  const ctx = new TextEncoder().encode(JSON.stringify({ format: "html" }));
+  assert.throws(() => parse(new TextEncoder().encode("{}"), ctx), /calls pandoc/);
+});
+
+test("in Node, the working directory, read-only, by default; nothing outside it (H7)", async () => {
+  const top = mkdtempSync(join(tmpdir(), "wasm-filter-cwd-"));
+  const work = join(top, "work");
+  mkdirSync(join(work, "sub"), { recursive: true });
+  writeFileSync(join(work, "part.txt"), "included");
+  writeFileSync(join(work, "sub", "deep.txt"), "deeper");
+  writeFileSync(join(top, "outside.txt"), "OUTSIDE");
+  symlinkSync(join(top, "outside.txt"), join(work, "link.txt"));
+  symlinkSync(top, join(work, "linkdir"));
+  symlinkSync(join(work, "part.txt"), join(work, "inner-link.txt"));
+  const include = await filter("include", { stderr: () => {} });
+  const run = (name) => pandoc.convertWithFilters({ from: "markdown", to: "plain" },
+                                                  "```include\n" + name + "\n```\n", [include]).trim();
+  const before = process.cwd();
+  process.chdir(work);
+  try {
+    assert.equal(run("part.txt"), "included");
+    assert.equal(run("sub/deep.txt"), "deeper");
+    assert.equal(run("sub/../part.txt"), "included");
+    assert.equal(run("inner-link.txt"), "included"); // a link inside it
+    for (const out of ["../outside.txt", join(top, "outside.txt"), "link.txt", "linkdir/outside.txt", "nonesuch"]) {
+      assert.throws(() => run(out), (e) => e instanceof PandocError && /exited with status 3/.test(e.message), out);
+    }
+    // read-only: nothing written, not a new file, not over one
+    const writer = await filter("misbehave", { stderr: () => {} });
+    for (const name of ["new.txt", "part.txt"]) {
+      assert.throws(() => pandoc.convertWithFilters({ from: "markdown", to: "plain" },
+                                                    "```write\n" + name + "\n```\n", [writer]),
+                    (e) => e instanceof PandocError && /exited with status 3/.test(e.message), name);
+    }
+    assert.equal(readFileSync(join(work, "part.txt"), "utf8"), "included");
+    assert.throws(() => readFileSync(join(work, "new.txt")));
+  } finally {
+    process.chdir(before);
+    rmSync(top, { recursive: true, force: true });
+  }
 });
 
 test("a filter's calls are sandboxed (LaTeX's \\input reads no file)", async () => {

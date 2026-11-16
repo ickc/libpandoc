@@ -14,13 +14,16 @@
 // It runs synchronously, as pandoc calls filters: a fresh instance of the
 // compiled module per run, with an in-memory stdin and stdout
 // (@bjorn3/browser_wasi_shim, pure JS, so the same in Node), and only the
-// directories given.
+// directories given: by default, in Node, the working directory, read-only
+// (node-dir.mjs), as the other hosts give it; in a browser, none (there is
+// no working directory).
 //
 // A filter may call pandoc (libpandoc-rs's `libpandoc::read` and the like,
-// built for wasm): given `pandoc` (core.mjs's, from node.mjs or
-// browser.mjs), its `libpandoc` imports are this libpandoc.wasm's calls,
-// marked untrusted (below), so that libpandoc allows them only pandoc's
-// sandbox and no options that read or write files or run programs.
+// built for wasm): its `libpandoc` imports are calls to the libpandoc.wasm
+// it runs in (or to `pandoc`, if given: core.mjs's, from node.mjs or
+// browser.mjs), marked untrusted (below), so that libpandoc allows them
+// only pandoc's sandbox and no options that read or write files or run
+// programs.
 //
 // Limits: `maxMemory` (bytes; in Node, by default $LIBPANDOC_WASM_MAX_MEMORY,
 // bytes or with k, m or g, as the other hosts) caps the filter's memory: the
@@ -169,12 +172,13 @@ function libpandocImports(abi, memory) {
  *  first argument (argv[0]); `maxMemory`: the most memory it may have, in
  *  bytes (null: none; by default, in Node, $LIBPANDOC_WASM_MAX_MEMORY);
  *  `preopens`: directories it may see (browser_wasi_shim
- *  PreopenDirectory); `pandocVersion`: for PANDOC_VERSION (by default,
- *  `pandoc`'s); `pandoc`: the libpandoc.wasm (core.mjs's) the filter's
- *  calls to pandoc go to; `stderr`: where its standard error's lines go.
- *  The result is a function on bytes, as core.mjs's convertWithFilters
- *  takes. */
-export async function wasmFilter(source, { name = "filter.wasm", preopens = [], pandoc = null,
+ *  PreopenDirectory; by default, in Node, the working directory, read-only,
+ *  as `.`; elsewhere none); `pandocVersion`: for PANDOC_VERSION (by default,
+ *  the pandoc's it runs in); `pandoc`: the libpandoc.wasm (core.mjs's) the
+ *  filter's calls to pandoc go to (by default, the one it runs in); `stderr`:
+ *  where its standard error's lines go. The result is a function on bytes,
+ *  as core.mjs's convertWithFilters takes. */
+export async function wasmFilter(source, { name = "filter.wasm", preopens, pandoc = null,
   pandocVersion = pandoc?.query({ query: "version" }) ?? null,
   stderr = (line) => console.warn(`[${name}] ${line}`),
   maxMemory = parseMemory(globalThis.process?.env?.LIBPANDOC_WASM_MAX_MEMORY) } = {}) {
@@ -183,13 +187,19 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
   if (maxMemory != null) source = withMaxMemory(source, maxMemory, name);
   const module = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source);
   const callsPandoc = WebAssembly.Module.imports(module).some((i) => i.module === "libpandoc");
-  if (callsPandoc && !pandoc) throw new Error(`${name} calls pandoc: give wasmFilter the pandoc it calls`);
-  function run(doc, context) {
+  // in Node, the working directory, read-only, when it runs
+  const cwd = preopens === undefined && globalThis.process?.versions?.node
+    ? (await import("./node-dir.mjs")).nodeDirectory : null;
+  // the conversion's instance: core.mjs gives a filter its own (third argument)
+  function run(doc, context, conversionPandoc = null) {
+    const target = pandoc ?? conversionPandoc;
+    if (callsPandoc && !target) throw new Error(`${name} calls pandoc: give wasmFilter the pandoc it calls`);
+    const version = (pandocVersion ??= target?.query({ query: "version" }) ?? null);
     const ctx = JSON.parse(fromUtf8.decode(context));
     const env = [`PANDOC_READER_OPTIONS=${JSON.stringify(ctx["reader-options"] ?? {})}`];
     // (libpandoc 1.10)
     if (ctx["writer-options"]) env.push(`PANDOC_WRITER_OPTIONS=${JSON.stringify(ctx["writer-options"])}`);
-    if (pandocVersion) env.push(`PANDOC_VERSION=${pandocVersion}`);
+    if (version) env.push(`PANDOC_VERSION=${version}`);
     if (ctx["input-format"]) env.push(`PANDOC_INPUT_FORMAT=${ctx["input-format"]}`);
     if (ctx["output-format"]) env.push(`PANDOC_OUTPUT_FORMAT=${ctx["output-format"]}`);
     // (libpandoc 1.13)
@@ -199,13 +209,13 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
       new OpenFile(new File(doc)),
       new OpenFile(stdout),
       ConsoleStdout.lineBuffered(stderr),
-      ...preopens,
+      ...(cwd ? [cwd(".", ".")] : preopens ?? []),
     ];
     // debug: false, or the shim logs every call (its default when omitted)
     const wasi = new WASI([name, ctx.format ?? ""], env, fds, { debug: false });
     const imports = { wasi_snapshot_preview1: wasi.wasiImport };
     let instance;
-    if (callsPandoc) imports.libpandoc = libpandocImports(pandoc.abi, () => instance.exports.memory);
+    if (callsPandoc) imports.libpandoc = libpandocImports(target.abi, () => instance.exports.memory);
     instance = new WebAssembly.Instance(module, imports);
     let status;
     try {
