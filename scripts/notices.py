@@ -50,7 +50,7 @@ ALIASES = {"Cffi": "ffi", "c++abi": "c++", "gcc_s": "stdc++", "stdc++fs": "stdc+
            "c@wasm": "wasi-libc", "m@wasm": "wasi-libc", "dl@wasm": "wasi-libc", "rt@wasm": "wasi-libc"}
 # the operating system's own (its C library, Windows' DLLs): not ours to list
 SYSTEM = {"c", "m", "rt", "dl", "pthread", "util", "atomic", "iconv", "charset", "resolv"}
-WINDOWS_SYSTEM = {"kernel32", "user32", "gdi32", "shell32", "advapi32", "ws2_32", "wsock32", "shlwapi",
+WINDOWS_SYSTEM = {"msimg32", "shfolder", "kernel32", "user32", "gdi32", "shell32", "advapi32", "ws2_32", "wsock32", "shlwapi",
                   "ole32", "oleaut32", "rpcrt4", "ntdll", "ucrt", "ucrtbase", "msvcrt", "dbghelp", "psapi",
                   "winmm", "version", "bcrypt", "crypt32", "iphlpapi", "secur32", "userenv", "uuid",
                   "mswsock", "synchronization", "api-ms-win-core-synch-l1-2-0", "mincore", "dnsapi",
