@@ -311,7 +311,11 @@ above), which pins the rest: `pins.env` (pandoc, the Hackage index state,
 GHC, cabal, ghc-wasm-meta), `cabal.project` and `cabal-wasm.project` (the
 git packages by commit, and `wasm/patches`), and the CI workflow (the
 build scripts, container images by digest). The Haskell packages are
-Hackage's at that index state, at the versions the notices list.
+Hackage's at that index state, at the versions the notices list. Not
+pinned there: the C libraries an archive includes come with GHC's
+toolchain (libffi; on Windows, statically, GMP and the rest) or the build
+machine (GMP from Homebrew on macOS); the notices name them, not their
+sources' versions.
 
 What a binding that redistributes libpandoc carries: the release's
 `COPYING.md` and `THIRD-PARTY-NOTICES` (or the module's notices), which
