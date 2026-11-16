@@ -544,7 +544,8 @@ LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
  * (Ctrl-C, a cancel button) from another thread while it runs.
  *
  * pandoc_cancel_token_new() makes a token: a number (from 1, never reused;
- * 0 only when the runtime isn't running or memory ran out). A call takes it
+ * 0 only when the runtime isn't running or memory ran out; not a secret:
+ * it names calls, any code in the process may cancel any). A call takes it
  * as libpandoc's option "cancel-token": N (not pandoc's) in pandoc_convert's
  * (and pandoc_convert_filters's) options and in pandoc_read_many's
  * "options"; a number that is no token (freed, never made) is a

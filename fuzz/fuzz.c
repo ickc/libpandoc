@@ -710,7 +710,8 @@ static void gen_doc(rng *r, buf *b, const char **from, int *hostile)
 typedef struct {
     int untrusted;  /* "untrusted": true, alone */
     double timeout; /* a valid time limit, else 0 */
-    int64_t token;  /* a cancel token, if any (in, then 0 if not given) */
+    int64_t token;  /* a cancel token (in); out: it if given, -1 if a random
+                       number was (it may name another call's), else 0 */
     int slow_ok;    /* Lua or callbacks: no time limit applies */
     int json;       /* the output must be JSON */
 } optinfo;
@@ -794,7 +795,7 @@ static void gen_options(rng *r, buf *b, int call, const char *from, int hostile,
     if (token && chance(r, 95)) {
         KEY("cancel-token");
         if (chance(r, 95)) bfmt(b, "%lld", (long long)token), oi->token = token;
-        else gen_value(r, b, "n", 0);
+        else gen_value(r, b, "n", 0), oi->token = -1;
     }
     if (untrusted_only || chance(r, 30)) {
         KEY("untrusted");
@@ -880,15 +881,17 @@ static void *cancel_later(void *p)
 }
 
 /* a token, given to the options with a chance (0: none); its canceller
- * started just before the call */
+ * started just before the call. (The same draws with -D, which makes no
+ * token: 1 stands for it.) */
 static int64_t maybe_token(rng *r, canceller *c)
 {
     memset(c, 0, sizeof *c);
-    if (dump || !chance(r, 25)) return 0;
-    c->token = pandoc_cancel_token_new();
-    if (c->token <= 0) violation("pandoc_cancel_token_new returned %lld", (long long)c->token);
+    if (!chance(r, 25)) return 0;
     c->ms = chance(r, 10) ? 0 : (int)below(r, 800);
     c->how = chance(r, 80) ? 0 : chance(r, 50) ? 1 : 2;
+    if (dump) return 1;
+    c->token = pandoc_cancel_token_new();
+    if (c->token <= 0) violation("pandoc_cancel_token_new returned %lld", (long long)c->token);
     return c->token;
 }
 
@@ -897,17 +900,20 @@ static void cancel_start(canceller *c)
     if (c->token) c->started = !pthread_create(&c->t, NULL, cancel_later, c);
 }
 
-/* after the call: dt its time, ended when it returned; a cancelled call that
- * runs no callback or Lua returns within 30 s of the cancel */
-static void cancel_end(canceller *c, pandoc_result *res, int given, int slow_ok, const char *call)
+/* after the call (given: what the options named, optinfo's token): a
+ * cancelled call that runs no callback or Lua returns within 30 s of the
+ * cancel; a call naming no token isn't "Cancelled" */
+static void cancel_end(canceller *c, pandoc_result *res, int64_t given, int slow_ok, const char *call)
 {
+    int was = res && res->error_kind && !strcmp(res->error_kind, "Cancelled");
+    if (was && given == 0) violation("%s: Cancelled, naming no token", call);
     if (!c->token) return;
     double ended = now();
     if (c->started) pthread_join(c->t, NULL);
-    if (given && c->how == 0 && !slow_ok && ended - c->at > 30)
+    if (given == c->token && c->how == 0 && !slow_ok && ended - c->at > 30)
         violation("%s returned %.1f s after its cancel", call, ended - c->at);
-    if (res && res->error_kind && !strcmp(res->error_kind, "Cancelled") && !(given && c->how == 0))
-        violation("%s: Cancelled, but not cancelled", call);
+    if (was && given == c->token && c->how != 0)
+        violation("%s: Cancelled, but its token was not", call);
     if (pandoc_cancel(c->token) != (c->how == 1 ? -1 : 0)) violation("pandoc_cancel's answer, after");
     pandoc_cancel_token_free(c->token);
 }
@@ -945,7 +951,7 @@ static void do_convert(rng *r)
         : pandoc_convert(bget(&opts), opts.n, no_input ? NULL : bget(&doc), doc.n);
     double dt = now() - t0;
     check(res, "pandoc_convert", oi.untrusted, oi.json);
-    cancel_end(&can, res, oi.token != 0, oi.slow_ok, "pandoc_convert");
+    cancel_end(&can, res, oi.token, oi.slow_ok, "pandoc_convert");
     if (oi.timeout && !oi.slow_ok && dt > oi.timeout + 30)
         violation("pandoc_convert took %.1f s with a time limit of %g s", dt, oi.timeout);
     pandoc_result_free(res);
@@ -995,7 +1001,7 @@ static void do_read_many(rng *r)
     pandoc_result *res = pandoc_read_many(bget(&req), req.n);
     double dt = now() - t0;
     check(res, "pandoc_read_many", oi.untrusted, 1);
-    cancel_end(&can, res, oi.token != 0, 0, "pandoc_read_many");
+    cancel_end(&can, res, oi.token, 0, "pandoc_read_many");
     if (oi.timeout && dt > oi.timeout + 30)
         violation("pandoc_read_many took %.1f s with a time limit of %g s", dt, oi.timeout);
     pandoc_result_free(res);
