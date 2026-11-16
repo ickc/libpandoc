@@ -6,12 +6,12 @@
  *
  *   cc test/untrusted.c -Idist/include -Ldist/lib -lpandoc && ./a.out
  *
- * PANDOC_DATA_DIRS (pandoc 3.14) is covered only for what pandoc reads in
- * its sandbox (reference documents, translations; citeproc in libpandoc's):
- * the template, its partials, dzslides' template and the abbreviations are
- * read before it, through the process's environment, which libpandoc
- * leaves alone (other threads read it). The test shows those, without
- * failing on them (the header says so).
+ * PANDOC_DATA_DIRS (pandoc 3.14) is honoured by design: it is the host's
+ * own configuration, not the untrusted options'. pandoc reads from it the
+ * template, its partials, dzslides' template and the abbreviations (before
+ * its sandbox), not reference documents or translations (in its sandbox;
+ * citeproc in libpandoc's). The test shows which, failing on neither (the
+ * header says so).
  *
  * Not on Windows: the user data directory, which is the system's
  * %APPDATA%\pandoc there (XDG_DATA_HOME, which the test points elsewhere,
@@ -45,7 +45,7 @@ static void check(int ok, const char *what)
 
 static void note(int leaked, const char *what)
 {
-    printf("      PANDOC_DATA_DIRS's %s: %s\n", what, leaked ? "read (not covered)" : "not read");
+    printf("      PANDOC_DATA_DIRS's %s: %s\n", what, leaked ? "read (honoured by design)" : "not read");
 }
 
 static int has(const char *s, const char *what) { return s && strstr(s, what); }

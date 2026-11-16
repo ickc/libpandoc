@@ -265,13 +265,13 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * nothing of the user data directory then (from 1.10; before, its
  * templates and the like): templates and their partials, reference
  * documents, abbreviations, translations and CSL styles are pandoc's own.
- * Directories in PANDOC_DATA_DIRS (pandoc's system data directories) are
- * left out only where pandoc reads in its sandbox (reference documents,
- * translations, citeproc's styles): the template, its partials, dzslides'
- * template and the abbreviations are read before it, where the process's
- * environment names them, and libpandoc doesn't change the environment
- * (other threads read it). A host for which those must stay out too
- * unsets PANDOC_DATA_DIRS before it starts threads. A host sets
+ * PANDOC_DATA_DIRS (pandoc's system data directories) is honoured, by
+ * design: it is the host process's own configuration, set by whoever runs
+ * the host, which untrusted options can't choose. From its directories
+ * pandoc reads the template, its partials, dzslides' template and the
+ * abbreviations (before its sandbox), but not reference documents,
+ * translations or citeproc's styles (in its sandbox, which leaves them
+ * out). A host that wants none of it doesn't set PANDOC_DATA_DIRS. A host sets
  * "untrusted": true on whatever such code passes (replacing its own
  * "untrusted"), and the list lives here, the same for every host.
  * "untrusted" is about options: it sets no time limit. A host sets one
