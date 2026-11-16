@@ -1,0 +1,27 @@
+# Updates for what is pinned by hand elsewhere (.github/workflows/ci.yml's
+# header lists it all): the workflow's actions (pinned by commit, the
+# version in a comment, which Dependabot updates together) and wasm/'s npm
+# lockfile. Each ecosystem's updates in one pull request a week, of releases
+# at least a week old. Not covered: container images in the workflow (by
+# digest: Dependabot's docker ecosystem reads Dockerfiles, not these), and
+# pins.env.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /wasm
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
