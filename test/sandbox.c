@@ -82,7 +82,7 @@ static void *serve(void *arg)
  * $PANDOC_SANDBOX. */
 static char told[256];
 
-static int tell(void *userdata, const char *doc, size_t doc_len,
+static int tell_sandbox(void *userdata, const char *doc, size_t doc_len,
                 const char *context, size_t context_len, pandoc_buffer *out)
 {
     (void)userdata;
@@ -98,7 +98,7 @@ static int tell(void *userdata, const char *doc, size_t doc_len,
 
 static const char *told_for(const char *opts)
 {
-    pandoc_filter f[] = {{tell, NULL}};
+    pandoc_filter f[] = {{tell_sandbox, NULL}};
     told[0] = '\0';
     pandoc_result *r = pandoc_convert_filters(opts, strlen(opts), "a", 1, f, 1);
     if (!r || r->status != 0) strcpy(told, "(failed)");
@@ -108,7 +108,7 @@ static const char *told_for(const char *opts)
 
 static const char *told_for_args(int argc, const char *const *argv)
 {
-    pandoc_filter f[] = {{tell, NULL}};
+    pandoc_filter f[] = {{tell_sandbox, NULL}};
     told[0] = '\0';
     pandoc_result *r = pandoc_convert_args_filters(argc, argv, "a", 1, f, 1);
     if (!r || r->status != 0) strcpy(told, "(failed)");
