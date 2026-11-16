@@ -128,7 +128,8 @@ extern "C" {
  * 1.13: filters are told whether pandoc's sandbox is on: a callback's
  * "sandbox", PANDOC_SANDBOX, and parse-args's "sandbox";
  * pandoc_cancel_token_new, pandoc_cancel, pandoc_cancel_token_free,
- * "cancel-token" and the error kind "Cancelled").
+ * "cancel-token" and the error kind "Cancelled"; descriptor 0 is /dev/null
+ * after pandoc closed standard input).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -454,7 +455,12 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  * Standard input is read once: pandoc closes it when it has read it, as
  * the command does, so a second call reading it in the same process (or
  * libpandoc.wasm instance) fails ("handle is closed"); calls naming their
- * input files can be made one after another.
+ * input files can be made one after another. Descriptor 0 is then
+ * /dev/null (from 1.13, not on Windows; also after a conversion given no
+ * input), so that what reads it later (`pandoc lua`, the host) finds it
+ * empty: before, it stayed free, and the next file the process opened
+ * took it (the runtime's own, when pandoc grew its threads: `pandoc lua`
+ * then failed or hung).
  *
  * In libpandoc.wasm (from 1.11) standard input, output and error are WASI's
  * descriptors 0, 1 and 2, which the host connects, and the files are those

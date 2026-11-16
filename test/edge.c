@@ -93,6 +93,30 @@ static int filter_exits(void)
     return ok ? 42 : 1;
 }
 
+/* The child, standard input a pipe: pandoc_main reads it (and closes it,
+ * as the command does); pandoc grows its threads (whose files took the
+ * free descriptor 0 before 1.13); then `pandoc lua` reading standard input
+ * finds it empty (/dev/null) rather than failing on, or hanging in, the
+ * runtime's epoll descriptor. 42 if so. (Found by fuzz/.) */
+static int stdin_then_lua(void)
+{
+    alarm(60);
+    const char *convert[] = {"pandoc", "-t", "html", "-o", "edge-stdin.html"};
+    int a = pandoc_main(5, convert, NULL, 0, NULL, 0);
+    const char *rq = "{\"inputs\": [\"a\", \"b\", \"c\"]}";
+    pandoc_result_free(pandoc_read_many(rq, strlen(rq)));
+    char where[64] = "";
+    ssize_t n = readlink("/proc/self/fd/0", where, sizeof where - 1);
+    if (n > 0) where[n] = '\0';
+    const char *lua[] = {"pandoc", "lua"};
+    int b = pandoc_main(2, lua, NULL, 0, NULL, 0);
+    char out[256];
+    read_file("edge-stdin.html", out, sizeof out);
+    remove("edge-stdin.html");
+    fprintf(stderr, "      returned %d and %d; descriptor 0: %s\n", a, b, n > 0 ? where : "(not on /proc)");
+    return a == 0 && b == 0 && strcmp(out, "<p><em>in</em></p>\n") == 0 ? 42 : 1;
+}
+
 /* what pandoc_main writes to standard output, in buf */
 static int main_output(int argc, const char *const *argv, char *buf, size_t size)
 {
@@ -126,6 +150,7 @@ int main(int argc, char **argv)
 #ifndef _WIN32
     if (argc > 1 && strcmp(argv[1], "broken-stdout") == 0) return broken_stdout();
     if (argc > 1 && strcmp(argv[1], "filter-exits") == 0) return filter_exits();
+    if (argc > 1 && strcmp(argv[1], "stdin-then-lua") == 0) return stdin_then_lua();
 #endif
     pandoc_result *r;
     const char *md = "*x*";
@@ -170,6 +195,16 @@ int main(int argc, char **argv)
         int st = system(cmd);
         check(WIFEXITED(st) && WEXITSTATUS(st) == 42,
               "a JSON filter that exits without reading its input: its error, not SIGPIPE");
+    }
+
+    /* pandoc_main reading standard input, then `pandoc lua` (in a child,
+     * its standard input a pipe) */
+    {
+        char cmd[4096];
+        snprintf(cmd, sizeof cmd, "printf '*in*' | \"%s\" stdin-then-lua", argv[0]);
+        int st = system(cmd);
+        check(WIFEXITED(st) && WEXITSTATUS(st) == 42,
+              "pandoc_main read standard input, then pandoc lua finds it empty (/dev/null)");
     }
 
     /* pandoc_main --version: as the command's, with its features and
