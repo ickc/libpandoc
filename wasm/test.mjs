@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { load as loadInMemory } from "./browser.mjs";
 import { load, PandocError, StoppedError } from "./node.mjs";
+import { readOptions } from "./core.mjs";
 
 const path = process.env.LIBPANDOC_WASM ?? new URL("../dist/wasm/libpandoc.wasm", import.meta.url).pathname;
 const t0 = performance.now();
@@ -81,6 +82,86 @@ test("a filter may call pandoc again", () => {
   };
   assert.equal(pandoc.convertWithFilters({ to: "html" }, "outer", [f]),
                "<p>outer</p>\n<p><strong>inner</strong></p>\n");
+});
+
+test("a filter is told whether pandoc's sandbox is on (1.13)", () => {
+  const told = [];
+  const f = (doc, ctx) => { told.push(ctx.sandbox); return doc; };
+  pandoc.convertWithFilters({ to: "html", sandbox: true }, "x", [f]);
+  pandoc.convertWithFilters({ to: "html" }, "x", [f]);
+  assert.deepEqual(told, [true, false]);
+  assert.equal(pandoc.query({ query: "parse-args", args: ["--sandbox"] }).sandbox, true);
+});
+
+test("a filter gets the instance it runs in: read and readMany as the conversion reads", () => {
+  writeFileSync(join(pandoc.tmp, "h2-secret.tex"), "SECRET");
+  const tex = "\\emph{x} \\input{/tmp/h2-secret.tex}";
+  const seen = {};
+  const f = (doc, ctx, p) => {
+    seen.same = p.read === pandoc.read;
+    const frag = p.read(tex, ctx); // LaTeX, as the conversion reads, sandboxed if it is
+    seen[ctx.sandbox ? "sandboxed" : "free"] = JSON.stringify(frag);
+    seen.many = p.readMany(["*a*", "\\textbf{b}"], ctx).map((d) => d.blocks[0].c[0].t);
+    seen.override = JSON.stringify(p.read(tex, ctx, { sandbox: false }));
+    doc.blocks.push(...frag.blocks);
+    return doc;
+  };
+  const out = pandoc.convertWithFilters({ from: "latex", to: "plain" }, "y", [f]);
+  assert.ok(seen.same);
+  assert.match(out, /^y\n\nx SECRET/);
+  assert.match(seen.free, /"Emph"/);
+  assert.match(seen.free, /SECRET/);
+  pandoc.convertWithFilters({ from: "latex", to: "plain", sandbox: true }, "y", [f]);
+  assert.match(seen.sandboxed, /"Emph"/);
+  assert.doesNotMatch(seen.sandboxed, /SECRET/);
+  assert.deepEqual(seen.many, ["Str", "Strong"]); // "*a*" is no emphasis in LaTeX
+  assert.match(seen.override, /SECRET/); // the filter's own choice
+  // a raw filter (JSON text) gets the instance too
+  pandoc.convertWithFilters({ to: "html" }, "x", [(d, c, p) => { seen.raw = p.read("*r*", JSON.parse(c)); return d; }],
+                            { raw: true });
+  assert.equal(seen.raw.blocks[0].c[0].t, "Emph");
+});
+
+test("read, readMany: a format, options, a conversion; failing fails", () => {
+  assert.equal(pandoc.read("\\textbf{b}", "latex").blocks[0].c[0].t, "Strong");
+  assert.equal(pandoc.readMany(["\\textbf{b}"], "latex")[0].blocks[0].c[0].t, "Strong");
+  assert.equal(pandoc.readMany(["# x"], { from: "markdown" })[0].blocks[0].t, "Header");
+  assert.throws(() => pandoc.read("x", "nonsense"), (e) => e instanceof PandocError);
+  assert.throws(() => pandoc.read("{", "json"), (e) => e instanceof PandocError);
+  // a conversion that doesn't say whether it is sandboxed (before 1.13): read
+  // in pandoc's sandbox (fail closed); panir's Conversion, camelCase
+  assert.deepEqual(readOptions({ "input-format": "latex", "reader-options": { "tab-stop": 2 } }),
+                   { "tab-stop": 2, sandbox: true, "preserve-tabs": true, from: "latex" });
+  assert.equal(readOptions({ inputFormat: "rst", sandbox: false }).sandbox, undefined);
+  assert.equal(readOptions({ inputFormat: "rst", options: { sandbox: { read: ["."] } } }).sandbox, true);
+});
+
+test("filters calling the instance, nested deep", () => {
+  // each level converts with a filter of the next, which reads a fragment
+  const level = (n) => (doc, ctx, p) => {
+    const frag = p.read(`*${n}*`, ctx);
+    doc.blocks.push(...frag.blocks);
+    if (n < 20) {
+      const inner = JSON.parse(p.convertWithFilters({ from: "markdown", to: "json" }, `level ${n + 1}`, [level(n + 1)]));
+      doc.blocks.push(...inner.blocks);
+    }
+    return doc;
+  };
+  const out = pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "top", [level(1)]);
+  assert.equal(out.split("\n\n").length, 40, out); // top, 1, then level n and n for 2 to 20
+  assert.match(out, /level 20\n\n20\n$/);
+  assert.equal(pandoc.convert({ to: "plain" }, "*after*"), "after\n");
+});
+
+test("binary output is bytes by itself (H12); asked for text, an error that says so", () => {
+  const docx = pandoc.convert({ to: "docx" }, "# Hi");
+  assert.ok(docx instanceof Uint8Array);
+  assert.equal(String.fromCharCode(docx[0], docx[1]), "PK");
+  assert.ok(pandoc.convertWithFilters({ to: "odt" }, "x", [(d) => d]) instanceof Uint8Array);
+  assert.equal(typeof pandoc.convert({ to: "html" }, "x"), "string");
+  assert.ok(pandoc.convert({ to: "html" }, "x", { bytes: true }) instanceof Uint8Array);
+  assert.throws(() => pandoc.convert({ to: "docx" }, "x", { bytes: false }),
+                (e) => e instanceof TypeError && /pass \{ bytes: true \}/.test(e.message));
 });
 
 test("a failing filter fails the conversion", () => {

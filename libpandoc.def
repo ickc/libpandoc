@@ -13,3 +13,6 @@ EXPORTS
     pandoc_set_num_threads
     pandoc_query
     pandoc_result_free
+    pandoc_cancel_token_new
+    pandoc_cancel
+    pandoc_cancel_token_free

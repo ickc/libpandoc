@@ -58,3 +58,11 @@ cabal update
 # shellcheck disable=SC2086
 cabal build ${CABALOPTS:-} flib:pandoc
 bash scripts/stage.sh "$out"
+# the licences of what it is built from, from the plan
+case "$(uname -s)" in
+Linux) target=linux ;; Darwin) target=darwin ;; *) target=windows ;;
+esac
+"$(bash scripts/python.sh)" scripts/notices.py --plan dist-newstyle/cache/plan.json \
+	--component flib:pandoc --store "$LIBPANDOC_STORE_DIR" --ghc-libdir "$LIBPANDOC_GHC_LIBDIR" \
+	--target "$target" --prefix "$out" --out "$out/THIRD-PARTY-NOTICES" \
+	--artifact "This is libpandoc (the library in this archive) for $(uname -s) $(uname -m)."

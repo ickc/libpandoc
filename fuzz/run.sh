@@ -18,7 +18,8 @@
 # OUT/found/CLASS/SEED/. Classes: violation (an invariant, fuzz exits 3),
 # crash (a signal), exit-N (the process exited otherwise), hang (an
 # iteration over 90 s, fuzz exits 4; or the child's time limit), oom (out
-# of memory: exit 251, or 1 when no thread could be made, or Lua's panic,
+# of memory: exit 251, or 1 when no thread could be made, or 254 when the
+# runtime's malloc failed, or Lua's panic,
 # then an abort or a segfault: by design, kept apart so that it buries
 # nothing), canary-open (the trace).
 set -euo pipefail
@@ -70,6 +71,7 @@ worker() {
 		elif ((st == 3)); then class=violation
 		elif { ((st == 251)) && grep -q 'out of memory' "$dir/stderr"; } ||
 			{ ((st == 1)) && grep -q 'failed to create OS thread' "$dir/stderr"; } ||
+			{ ((st == 254)) && grep -q '^malloc: failed on request' "$dir/stderr"; } ||
 			{ ((st == 134 || st == 139)) && grep -q 'PANIC: .*(not enough memory)' "$dir/stderr"; }; then class=oom
 		elif ((st == 4 || st == 124 || st == 137)); then class=hang
 		elif ((st > 128)); then class=crash

@@ -42,6 +42,9 @@ per reader (a sample written by the writer of the same name).
   metadata bibliographies with citeproc).
 - Callback filters that answer the document, a truncated or huge one,
   random bytes, deep JSON, nothing, or fail; or call pandoc again.
+- Cancel tokens (1.13): a quarter of the conversions and `read_many`
+  calls get one, which another thread cancels (or frees, or leaves) after
+  up to 0.8 s.
 - A canary: files, and a user data directory (`HOME`, `XDG_DATA_HOME`) with
   templates and translations, whose content must never come out of an
   untrusted call.
@@ -55,6 +58,9 @@ per reader (a sample written by the writer of the same name).
   `read_many`'s and queries' output is JSON; a callback is given JSON.
 - A call with a time limit and no Lua or callback filter returns within
   the limit and 30 s.
+- A cancelled call with no Lua or callback filter returns within 30 s of
+  the cancel; a call fails with `"Cancelled"` only if its token was
+  cancelled; `pandoc_cancel` answers 0 for a token, -1 once it is freed.
 - Untrusted calls: no canary content in output, message or log; and in
   the traced children (all calls untrusted), no canary file opened.
 - At a child's end: no temporary directory left in `TMPDIR`, no
@@ -78,8 +84,9 @@ Lua's "not enough memory" panic), kept apart so it buries nothing.
 | `"timeout"` doesn't stop the muse writer on a run of `{` (a loop that doesn't allocate; 40 `{`: 2.5 s, x1.6 each) | hang | pandoc (writer), GHC (interruptible only where code allocates) | upstream: `printf '%*s\n' 40 '' \| tr ' ' '{' \| pandoc -t muse` |
 | markdown's `citations`: unclosed `[` are exponential (18 `[`: 2.3 s) | hang | pandoc | upstream: `printf '[%.0s' {1..18} \| pandoc` |
 | dokuwiki: unclosed `((`, `<sup>`, `<del>` are exponential (16 `((`: 24 s) | hang | pandoc | upstream: `printf '((%.0s' {1..16} \| pandoc -f dokuwiki` |
-| after `pandoc_main` reads standard input, descriptor 0 is closed and taken by the runtime's next file (epoll): `pandoc lua` then reads that and hangs | hang | libpandoc | open (not small) |
+| after `pandoc_main` reads standard input, descriptor 0 is closed and taken by the runtime's next file (epoll): `pandoc lua` then reads that and hangs | hang | libpandoc | fixed (1.13: descriptor 0 is /dev/null then), `test/edge.c` |
 | out of memory under the cap: Lua's panic (abort), and `hsluaL_newstate` using a NULL `lua_State` (SIGSEGV) | oom, crash (139) | hslua | upstream: check `luaL_newstate`'s result |
+| the same file as `"log-file"` and `"output-file"`: the result's log was the output, not JSON (2026-11-16, against 1.13) | violation | libpandoc | fixed (1.13: the log is `[]` then), `test/edge.c` |
 
 Then 20 minutes against the fixes (2,706 children, 517,006 calls): no
 SIGPIPE crash, no NUL violation; the `<q` violation again, and one Lua

@@ -77,6 +77,99 @@ static void *serve(void *arg)
 }
 #endif
 
+/* Filters are told whether pandoc's sandbox is on (1.13): a callback the
+ * context's "sandbox", which it copies here; a JSON filter
+ * $PANDOC_SANDBOX. */
+static char told[256];
+
+static int tell_sandbox(void *userdata, const char *doc, size_t doc_len,
+                const char *context, size_t context_len, pandoc_buffer *out)
+{
+    (void)userdata;
+    char *ctx = malloc(context_len + 1); /* (not NUL-terminated) */
+    memcpy(ctx, context, context_len);
+    ctx[context_len] = '\0';
+    const char *s = strstr(ctx, "\"sandbox\":");
+    snprintf(told, sizeof told, "%.*s", s ? (int)strcspn(s, ",}") : 0, s ? s : "");
+    free(ctx);
+    pandoc_buffer_set(out, doc, doc_len);
+    return 0;
+}
+
+static const char *told_for(const char *opts)
+{
+    pandoc_filter f[] = {{tell_sandbox, NULL}};
+    told[0] = '\0';
+    pandoc_result *r = pandoc_convert_filters(opts, strlen(opts), "a", 1, f, 1);
+    if (!r || r->status != 0) strcpy(told, "(failed)");
+    pandoc_result_free(r);
+    return told;
+}
+
+static const char *told_for_args(int argc, const char *const *argv)
+{
+    pandoc_filter f[] = {{tell_sandbox, NULL}};
+    told[0] = '\0';
+    pandoc_result *r = pandoc_convert_args_filters(argc, argv, "a", 1, f, 1);
+    if (!r || r->status != 0) strcpy(told, "(failed)");
+    pandoc_result_free(r);
+    return told;
+}
+
+static void filters_are_told(void)
+{
+    const char *cb = "\"filters\": [{\"type\": \"callback\", \"index\": 0}]";
+    char opts[256];
+    snprintf(opts, sizeof opts, "{%s, \"sandbox\": true}", cb);
+    check(strcmp(told_for(opts), "\"sandbox\":true") == 0, "a callback is told \"sandbox\": true");
+    snprintf(opts, sizeof opts, "{%s}", cb);
+    check(strcmp(told_for(opts), "\"sandbox\":false") == 0, "... false without it");
+    snprintf(opts, sizeof opts, "{%s, \"sandbox\": false}", cb);
+    check(strcmp(told_for(opts), "\"sandbox\":false") == 0, "... false with \"sandbox\": false");
+    const char *with[] = {"--sandbox", "--lua-filter=libpandoc:callback/0"};
+    check(strcmp(told_for_args(2, with), "\"sandbox\":true") == 0, "... true with --sandbox");
+    const char *without[] = {"--lua-filter=libpandoc:callback/0"};
+    check(strcmp(told_for_args(1, without), "\"sandbox\":false") == 0, "... false without --sandbox");
+    write_file("sbx-defaults.yaml", "sandbox: true\nfilters: [{type: lua, path: \"libpandoc:callback/0\"}]\n");
+    const char *defaults[] = {"--defaults=sbx-defaults.yaml"};
+    check(strcmp(told_for_args(1, defaults), "\"sandbox\":true") == 0, "... true from a defaults file");
+
+    /* parse-args says it too */
+    const char *q[] = {
+        "{\"query\": \"parse-args\", \"args\": [\"--sandbox\"]}",
+        "{\"query\": \"parse-args\", \"args\": [\"-d\", \"sbx-defaults.yaml\"]}",
+        "{\"query\": \"parse-args\", \"args\": [\"-F\", \"f\"]}",
+    };
+    for (int i = 0; i < 3; i++) {
+        pandoc_result *r = pandoc_query(q[i], strlen(q[i]));
+        check(r && r->status == 0 && has(r->output, i < 2 ? "\"sandbox\":true" : "\"sandbox\":false"),
+              q[i]);
+        if (r) printf("      %s\n", r->status == 0 ? r->output : r->error_message);
+        pandoc_result_free(r);
+    }
+    remove("sbx-defaults.yaml");
+
+#ifndef _WIN32
+    /* a JSON filter: $PANDOC_SANDBOX */
+    write_file("sbx-filter.sh", "#!/bin/sh\nprintf %s \"$PANDOC_SANDBOX\" > sbx-told.txt\ncat\n");
+    chmod("sbx-filter.sh", 0755);
+    const char *json[] = {"{\"filters\": [\"./sbx-filter.sh\"], \"sandbox\": true}",
+                          "{\"filters\": [\"./sbx-filter.sh\"]}"};
+    for (int i = 0; i < 2; i++) {
+        remove("sbx-told.txt");
+        pandoc_result *r = pandoc_convert(json[i], strlen(json[i]), "a", 1);
+        char got[16] = "";
+        FILE *f = fopen("sbx-told.txt", "rb");
+        if (f) { got[fread(got, 1, sizeof got - 1, f)] = '\0'; fclose(f); }
+        check(r && r->status == 0 && strcmp(got, i == 0 ? "true" : "false") == 0,
+              i == 0 ? "a JSON filter is told PANDOC_SANDBOX=true" : "... false without it");
+        pandoc_result_free(r);
+    }
+    remove("sbx-told.txt");
+    remove("sbx-filter.sh");
+#endif
+}
+
 #define SANDBOX "{\"to\": \"plain\", \"citeproc\": true, \"sandbox\": true"
 #define LATEX "{\"from\": \"latex\", \"to\": \"plain\", \"citeproc\": true, \"sandbox\": true"
 #define NOCITE "nocite: \"@*\"\n---\n\nText.\n"
@@ -254,5 +347,6 @@ int main(void)
 #endif
     remove("sbx/refs.bib");
     remove_dir("sbx");
+    filters_are_told();
     return failures != 0;
 }

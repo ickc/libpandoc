@@ -37,7 +37,8 @@
  *     recover from that inside a library; and there is no memory limit for
  *     a call (see "timeout" at pandoc_convert);
  *   - time: a call runs until it ends, unless its options give it a
- *     "timeout" (pandoc_convert, pandoc_read_many), which stops pandoc's own
+ *     "timeout" (pandoc_convert, pandoc_read_many) or a "cancel-token"
+ *     another thread cancels (pandoc_cancel), which stop pandoc's own
  *     code, not code in a foreign call (callbacks, Lua).
  *
  * Versions: a program or binding built against this header's MAJOR.MINOR
@@ -86,6 +87,7 @@
 #define LIBPANDOC_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -122,12 +124,17 @@ extern "C" {
  * and a conversion whose temporary directory can't be removed fails;
  * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0];
  * 1.12: SIGPIPE is blocked in the threads that run pandoc (pandoc_init);
- * a NUL in an error's message is U+FFFD).
+ * a NUL in an error's message is U+FFFD;
+ * 1.13: filters are told whether pandoc's sandbox is on: a callback's
+ * "sandbox", PANDOC_SANDBOX, and parse-args's "sandbox";
+ * pandoc_cancel_token_new, pandoc_cancel, pandoc_cancel_token_free,
+ * "cancel-token" and the error kind "Cancelled"; descriptor 0 is /dev/null
+ * after pandoc closed standard input).
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 12
+#define LIBPANDOC_ABI_VERSION_MINOR 13
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -144,7 +151,8 @@ typedef struct pandoc_result {
     /* On failure, NUL-terminated: the pandoc error constructor (e.g.
      * "PandocParseError", "PandocUnknownReaderError"), "Timeout" for a call
      * stopped by its time limit (libpandoc's, from 1.10: "timeout" at
-     * pandoc_convert), or "Exception" for anything else, and the message
+     * pandoc_convert), "Cancelled" for one stopped by pandoc_cancel (from
+     * 1.13), or "Exception" for anything else, and the message
      * pandoc would print (for an "Exception", its message only, without
      * the backtrace GHC 9.10 adds to it: from 1.9). A NUL byte in either
      * (a file name's) is U+FFFD (from 1.12; before, the text ended there).
@@ -358,7 +366,19 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *              text), ...; not the syntax definitions. In
  *              PANDOC_WRITER_OPTIONS without "variables" when the whole would
  *              be longer than 32,000 bytes (an environment variable's limit,
- *              on Windows).
+ *              on Windows);
+ *            "sandbox": true when pandoc's sandbox is on for the conversion
+ *              (from 1.13), however it was set: "sandbox": true or
+ *              "untrusted" in the options, --sandbox, a defaults file; else
+ *              false. What a JSON filter run by libpandoc gets in
+ *              PANDOC_SANDBOX ("true" or "false"; pandoc tells filters
+ *              nothing of it). So that a filter parsing the document's text
+ *              (pandoc_read_many) reads it in the sandbox too, as a Lua
+ *              filter's pandoc.read runs inside the conversion. In
+ *              libpandoc.wasm it says the same, pandoc's own sandbox: the
+ *              module can't know which directories its host opened to it,
+ *              so a host running the conversion in a directory sandbox says
+ *              true itself to the filters it runs outside the module.
  * Neither is NUL-terminated, and both are valid only during the call.
  *
  * fn returns 0 and puts the new document, as pandoc's JSON, in out with
@@ -435,7 +455,12 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  * Standard input is read once: pandoc closes it when it has read it, as
  * the command does, so a second call reading it in the same process (or
  * libpandoc.wasm instance) fails ("handle is closed"); calls naming their
- * input files can be made one after another.
+ * input files can be made one after another. Descriptor 0 is then
+ * /dev/null (from 1.13, not on Windows; also after a conversion given no
+ * input), so that what reads it later (`pandoc lua`, the host) finds it
+ * empty: before, it stayed free, and the next file the process opened
+ * took it (the runtime's own, when pandoc grew its threads: `pandoc lua`
+ * then failed or hung).
  *
  * In libpandoc.wasm (from 1.11) standard input, output and error are WASI's
  * descriptors 0, 1 and 2, which the host connects, and the files are those
@@ -503,7 +528,9 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *   {"query": "parse-args", "args": [...]}
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":
- *                                         [...]} (defaults files included),
+ *                                         [...], "sandbox": true|false}
+ *                                         (defaults files included;
+ *                                         "sandbox" from 1.13: --sandbox),
  *                                         or {"informational": "VersionInfo"},
  *                                         or {"subcommand": "lua"} (or
  *                                         "server"), whose arguments aren't
@@ -512,6 +539,76 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  * pandoc_convert, only those that read nothing of the user's: not
  * default-template nor parse-args. */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
+
+/* Cancelling a call (from 1.13): for a binding to stop a long conversion
+ * (Ctrl-C, a cancel button) from another thread while it runs.
+ *
+ * pandoc_cancel_token_new() makes a token: a number (from 1, never reused;
+ * 0 only when the runtime isn't running or memory ran out; not a secret:
+ * it names calls, any code in the process may cancel any). A call takes it
+ * as libpandoc's option "cancel-token": N (not pandoc's) in pandoc_convert's
+ * (and pandoc_convert_filters's) options and in pandoc_read_many's
+ * "options"; a number that is no token (freed, never made) is a
+ * PandocOptionError, so a call that couldn't be cancelled doesn't start.
+ * "untrusted" options can't name one (a PandocOptionError): a host's own
+ * calls do, and the calls such code makes from inside a callback inherit
+ * them (below).
+ *
+ * pandoc_cancel(token) cancels it: every call using it, running or to come,
+ * stops and fails with the error kind "Cancelled" (and a message saying
+ * so, an empty log), as one past its "timeout" fails with "Timeout": its
+ * temporary files are removed, a JSON filter it runs is terminated and
+ * reaped, and the process and the library go on. pandoc_read_many fails as
+ * a whole (no array of partial results, as its time limit gives): a reader
+ * still running stops, and the call returns once all have. A token stays
+ * cancelled: a call given it later fails at once, so a cancel made just
+ * before a call starts isn't lost. A token not cancelled serves any number
+ * of calls, one after another or at once (one for a batch: cancelled, it
+ * stops them all). A call that had finished before the cancel keeps its
+ * result. Returns 0, or -1 for a number that is no token (nothing happens;
+ * never a crash).
+ *
+ * pandoc_cancel_token_free(token) forgets it (a number that is no token:
+ * nothing). Calls using it go on, and can no longer be cancelled through
+ * it. Free each token made: a few dozen bytes each.
+ *
+ * Calls made from inside a callback filter, on the thread pandoc called it
+ * on (to read a fragment, say), are cancelled with the conversion: they
+ * stop for its tokens (and those it inherited) as well as their own. On
+ * another thread they don't (libpandoc can't tell whose they are).
+ *
+ * Threads: these three may be called from any thread, at any time, also
+ * while calls run and from inside a callback; they don't count as calls
+ * (pandoc doesn't grow its threads for them). pandoc_cancel takes the
+ * runtime briefly: it returns at once when a processor of pandoc's is
+ * free, else when the running code next yields (within milliseconds: the
+ * runtime switches threads every 20 ms) -- or, in a loop that doesn't
+ * allocate (below), not until the loop ends. They are NOT async-signal-
+ * safe: don't call them from a signal handler (the runtime takes locks and
+ * allocates). From a signal, cancel on a normal thread: Python's handlers
+ * (which run on its main thread), Julia's InterruptException, Rust's ctrlc
+ * crate (whose handler runs on a thread of its own), or a thread of the
+ * host's waiting on a pipe the handler writes to.
+ *
+ * Limits, those of "timeout" (pandoc_convert): a cancel stops pandoc's own
+ * code where it allocates, which its readers, writers, templates and
+ * citeproc do as they run, and a JSON filter (SIGTERM, reaped). Not code in
+ * a foreign call: a callback filter runs to its end (its answer is then
+ * freed and the call fails with "Cancelled"; a call it makes after the
+ * cancel fails at once, above), and Lua (filters, custom readers and
+ * writers, a Lua filter's pandoc.read) isn't stopped at all. Nor a loop of
+ * pandoc's that doesn't allocate (libpandoc is built without
+ * -fno-omit-yields; the fuzzer found one, the muse writer on a run of `{`):
+ * it ends first. pandoc_convert_args, pandoc_convert_args_filters and
+ * pandoc_main take no token (no options), but are cancelled as a callback's
+ * calls above. libpandoc.wasm exports none of the three: nothing can call
+ * them while a call runs there (one thread); a host stops a call from
+ * outside instead (wasmtime's epoch interruption, a Worker's terminate()),
+ * which stops the instance (load another), and "cancel-token" there names
+ * no token. */
+LIBPANDOC_API int64_t pandoc_cancel_token_new(void);
+LIBPANDOC_API int pandoc_cancel(int64_t token);
+LIBPANDOC_API void pandoc_cancel_token_free(int64_t token);
 
 /* Every function returning a pandoc_result returns NULL only when the
  * runtime isn't running (after pandoc_shutdown) or memory ran out. */

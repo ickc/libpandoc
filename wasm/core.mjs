@@ -33,6 +33,58 @@ function cBytes(s, what) {
   return utf8.encode(s + "\0");
 }
 
+// Writers whose output is bytes, not text (as libpandoc-python's): what
+// convert returns as bytes unless told otherwise.
+const BINARY_WRITERS = new Set(["docx", "odt", "epub", "epub2", "epub3", "pptx", "pdf", "chunkedhtml", "xlsx"]);
+
+function binaryOutput(options) {
+  const to = options?.to ?? options?.writer ?? "html";
+  if (typeof to !== "string" || to.toLowerCase().includes(".lua")) return false; // a Lua writer
+  return BINARY_WRITERS.has(to.split(/[+-]/, 1)[0]);
+}
+
+// What libpandoc reads with: the conversion's options that apply to
+// reading a fragment, and the reader's options a filter is told that have
+// a defaults-file key (as libpandoc-python's read_options).
+const READ_OPTIONS = ["abbreviations", "data-dir", "default-image-extension", "indented-code-classes",
+  "resource-path", "strip-comments", "tab-stop", "track-changes"];
+const READER_OPTIONS = ["default-image-extension", "indented-code-classes", "strip-comments", "tab-stop"];
+const TRACK_CHANGES = { "accept-changes": "accept", "reject-changes": "reject", "all-changes": "all" };
+
+/** Whether `x` is a conversion a filter runs in: libpandoc's context (the
+ *  filter's second argument) or panir's `Conversion`. */
+export function isConversion(x) {
+  return x !== null && typeof x === "object" && !Array.isArray(x)
+    && ["reader-options", "input-format", "readerOptions", "inputFormat"].some((k) => k in x);
+}
+
+/** Options (defaults-file keys) to read a fragment as `conversion` reads
+ *  its input: its input format (or `format`), the options that affect
+ *  reading, its tabs kept (as Lua's pandoc.read), and pandoc's sandbox when
+ *  the conversion is sandboxed or that can't be told (it reads no files: a
+ *  LaTeX \input or an RST include in the text). `conversion` is
+ *  libpandoc's context (1.13 says "sandbox") or panir's `Conversion`
+ *  (`options` when known, `sandbox` when told). */
+export function readOptions(conversion, format = undefined) {
+  const c = conversion ?? {};
+  const options = c.options ?? undefined;
+  const reader = c.readerOptions ?? c["reader-options"];
+  const opts = {};
+  if (options) {
+    for (const k of READ_OPTIONS) if (options[k] !== undefined) opts[k] = options[k];
+  } else if (reader) {
+    for (const k of READER_OPTIONS) if (reader[k] !== undefined) opts[k] = reader[k];
+    if (TRACK_CHANGES[reader["track-changes"]]) opts["track-changes"] = TRACK_CHANGES[reader["track-changes"]];
+  }
+  // fail closed: sandboxed unless libpandoc said it isn't, or the options
+  // (when known) say so
+  const told = c.sandbox, asked = options?.sandbox;
+  if (told === true || (asked != null && asked !== false) || (told == null && options == null)) opts.sandbox = true;
+  opts["preserve-tabs"] = true;
+  opts.from = format ?? c.inputFormat ?? c["input-format"] ?? options?.from ?? options?.reader ?? "markdown";
+  return opts;
+}
+
 export class PandocError extends Error {
   constructor(kind, message) {
     super(message);
@@ -246,8 +298,24 @@ export async function start(module, wasi) {
     return { output, log: JSON.parse(log) };
   }
   const str = (b) => fromUtf8.decode(b);
+  // the output: bytes with `bytes`, text without; by default as the format
+  // is (docx, epub, ... bytes)
+  function output(out, options, bytes) {
+    if (bytes ?? binaryOutput(options)) return out;
+    try {
+      return str(out);
+    } catch (e) {
+      throw new TypeError("the output isn't UTF-8 text (a binary format?): pass { bytes: true } for bytes",
+                          { cause: e });
+    }
+  }
+  // options to read with: from a format or a conversion, and those given
+  function readRequest(from, options) {
+    const opts = isConversion(from) ? readOptions(from) : { from: from ?? "markdown" };
+    return { ...opts, ...options };
+  }
 
-  return {
+  const self = {
     exports: ex,
     abi,
     /** Stop this instance: every later call throws a StoppedError (the
@@ -259,34 +327,36 @@ export async function start(module, wasi) {
     /** Convert with defaults-file options; `input` (a string or bytes) is
      *  the standard input. The output is a string (bytes with `bytes`,
      *  for docx and the like). */
-    convert(options, input = null, { bytes = false } = {}) {
-      const { output } = ok(abi.convert(JSON.stringify(options), input));
-      return bytes ? output : str(output);
+    convert(options, input = null, { bytes } = {}) {
+      return output(ok(abi.convert(JSON.stringify(options), input)).output, options, bytes);
     },
     /** Convert, with JS functions as filters: each takes the document as
-     *  pandoc's JSON and the context, and returns the new document. Named
+     *  pandoc's JSON, the context, and this instance (to read fragments as
+     *  the conversion reads: `pandoc.read(text, ctx)`, `pandoc.readMany`;
+     *  or `convert`, `query`: nested calls into the same instance), and
+     *  returns the new document. Named
      *  in `options.filters` as {type: "callback", index: i}; by default,
      *  all of them after the options' own filters. With `raw`, the
      *  functions take and return JSON text (for a library that parses it
      *  itself, such as panir, or for Python in Pyodide). A function with
-     *  `bytes` set (wasm-filter.mjs's) takes and returns bytes. */
-    convertWithFilters(options, input, fns, { raw = false, bytes = false } = {}) {
+     *  `bytes` set (wasm-filter.mjs's) takes and returns bytes. The output
+     *  as `convert`'s. */
+    convertWithFilters(options, input, fns, { raw = false, bytes } = {}) {
       const opts = { ...options };
       if (!opts.filters?.some((f) => f?.type === "callback")) {
         opts.filters = [...(opts.filters ?? []), ...fns.map((_, i) => ({ type: "callback", index: i }))];
       }
       // a function marked `bytes` (a wasm filter) takes and returns bytes
-      const wrapped = fns.map((fn) => fn.bytes ? fn : raw
-        ? (doc, ctx) => fn(str(doc), str(ctx))
+      const wrapped = fns.map((fn) => fn.bytes ? (doc, ctx) => fn(doc, ctx, self) : raw
+        ? (doc, ctx) => fn(str(doc), str(ctx), self)
         : (doc, ctx) => {
-          const out = fn(JSON.parse(str(doc)), JSON.parse(str(ctx)));
+          const out = fn(JSON.parse(str(doc)), JSON.parse(str(ctx)), self);
           if (out === undefined) throw new Error("the filter returned no document (a missing return?)");
           if (typeof out?.then === "function")
             throw new Error("the filter returned a Promise: filters run synchronously");
           return JSON.stringify(out);
         });
-      const { output } = ok(abi.convertFilters(JSON.stringify(opts), input, wrapped));
-      return bytes ? output : str(output);
+      return output(ok(abi.convertFilters(JSON.stringify(opts), input, wrapped)).output, options, bytes);
     },
     query(q) {
       return JSON.parse(str(ok(abi.query(JSON.stringify(q))).output));
@@ -300,8 +370,25 @@ export async function start(module, wasi) {
     main(args, { filtersJson = null, filters = [] } = {}) {
       return abi.main(["pandoc", ...args], filtersJson === null ? null : JSON.stringify(filtersJson), filters);
     },
-    readMany(inputs, options = {}) {
-      return JSON.parse(str(ok(abi.readMany(JSON.stringify({ options, inputs }))).output));
+    /** Read many texts, each on its own: their documents (pandoc's JSON),
+     *  or {error: {kind, message}} in a text's place. `from`: the options
+     *  (with "from"), a format, or a conversion (a filter's context, or
+     *  panir's Conversion) to read as it reads (`readOptions`); `options`
+     *  win over what that gives. */
+    readMany(inputs, from = {}, options = {}) {
+      const opts = isConversion(from) ? { ...readOptions(from), ...options }
+        : typeof from === "string" ? { from, ...options } : { ...from, ...options };
+      return JSON.parse(str(ok(abi.readMany(JSON.stringify({ options: opts, inputs }))).output));
+    },
+    /** Read one text: its document (pandoc's JSON); a PandocError if it
+     *  can't be. `from`: a format (default markdown), or a conversion, as
+     *  for readMany; `options` win over what that gives. */
+    read(text, from = "markdown", options = {}) {
+      if (typeof text !== "string") throw new InputError("read: the text, a string");
+      const [doc] = JSON.parse(str(ok(abi.readMany(JSON.stringify({ options: readRequest(from, options),
+                                                                    inputs: [text] }))).output));
+      if (doc?.error) throw new PandocError(doc.error.kind, doc.error.message);
+      return doc;
     },
     /** Set pandoc's working directory (an absolute path in its
      *  filesystem; "/" at first), against which relative paths resolve. */
@@ -309,4 +396,5 @@ export async function start(module, wasi) {
       if (abi.chdir(path) !== 0) throw new Error(`libpandoc.wasm: can't change to ${path}`);
     },
   };
+  return self;
 }

@@ -142,24 +142,24 @@ jobs:
       # on the runner's Ubuntu; musl's, in a plain Alpine (no GHC, no -dev
       # packages: the libraries it bundles and the system's own only).
       # the smoke test, then the sandbox (citeproc), untrusted (the data
-      # directory), edge-case, time-limit
-      # and threads tests
+      # directory), edge-case, time-limit, threads
+      # and cancel tests
       - name: Tests (C, musl)
         if: matrix.image == 'musllinux_1_2'
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf sh -c '
             apk add -q gcc musl-dev gmp zlib libffi libstdc++ &&
-            for t in smoke sandbox untrusted edge limits threads; do
+            for t in smoke sandbox untrusted edge limits threads cancel; do
               cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" || exit 1
             done &&
-            dist/smoke dist/share/libpandoc/api-version.json && dist/sandbox && dist/untrusted && dist/edge && dist/limits && dist/threads &&
-            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads'
+            dist/smoke dist/share/libpandoc/api-version.json && dist/sandbox && dist/untrusted && dist/edge && dist/limits && dist/threads && dist/cancel &&
+            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel'
 
       - name: Tests (C)
         if: matrix.image != 'musllinux_1_2'
         run: |
-          for t in smoke sandbox untrusted edge limits threads; do
+          for t in smoke sandbox untrusted edge limits threads cancel; do
             case "$RUNNER_OS" in
               Linux)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
               macOS)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
@@ -167,8 +167,8 @@ jobs:
             esac
           done
           if [[ $RUNNER_OS == Windows ]]; then
-            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json && ./sandbox.exe && ./untrusted.exe && ./edge.exe && ./limits.exe && ./threads.exe)
-            rm dist/bin/smoke.exe dist/bin/sandbox.exe dist/bin/untrusted.exe dist/bin/edge.exe dist/bin/limits.exe dist/bin/threads.exe
+            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json && ./sandbox.exe && ./untrusted.exe && ./edge.exe && ./limits.exe && ./threads.exe && ./cancel.exe)
+            rm dist/bin/smoke.exe dist/bin/sandbox.exe dist/bin/untrusted.exe dist/bin/edge.exe dist/bin/limits.exe dist/bin/threads.exe dist/bin/cancel.exe
           else
             dist/smoke dist/share/libpandoc/api-version.json
             dist/sandbox
@@ -176,7 +176,8 @@ jobs:
             dist/edge
             dist/limits
             dist/threads
-            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads
+            dist/cancel
+            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel
           fi
 
       - name: Show size
@@ -302,10 +303,12 @@ jobs:
           path: |
             dist/wasm/libpandoc.wasm
             dist/wasm/libpandoc-pyodide.mjs
+            dist/wasm/libpandoc-wasm-THIRD-PARTY-NOTICES.txt
 
   # Every push to main replaces the assets of the `continuous` pre-release,
-  # which downstream CI (libpandoc-python) downloads: the native builds,
-  # libpandoc.wasm and its bundled JS for Pyodide; with SHA256SUMS, and a
+  # which downstream CI (libpandoc-python) downloads: the native builds
+  # (each with its THIRD-PARTY-NOTICES), libpandoc.wasm, its notices and its
+  # bundled JS for Pyodide; with SHA256SUMS, and a
   # build provenance attestation of each (README: "Verifying a download").
   # Only from main (not from pull requests, forks' included), one run at a
   # time in order (the workflow's concurrency, and this job's).
@@ -331,7 +334,7 @@ jobs:
           name: wasm-libpandoc
       - name: Checksums
         run: |
-          sha256sum libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs > SHA256SUMS
+          sha256sum libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs libpandoc-wasm-THIRD-PARTY-NOTICES.txt > SHA256SUMS
           cat SHA256SUMS
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -340,6 +343,7 @@ jobs:
             libpandoc-*.tar.gz
             libpandoc.wasm
             libpandoc-pyodide.mjs
+            libpandoc-wasm-THIRD-PARTY-NOTICES.txt
             SHA256SUMS
       # SHA256SUMS last: while the assets are being replaced, a download
       # checked against it fails rather than passes
@@ -351,5 +355,6 @@ jobs:
           gh release view continuous >/dev/null 2>&1 ||
             gh release create continuous --prerelease --title continuous \
               --notes "Latest build of main. Replaced on every push. Verify a download: README.md, \"Verifying a download\"."
-          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs --clobber
+          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs \
+            libpandoc-wasm-THIRD-PARTY-NOTICES.txt --clobber
           gh release upload continuous SHA256SUMS --clobber

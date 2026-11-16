@@ -35,6 +35,7 @@ JavaScript on libpandoc.wasm ([`wasm/`](wasm/README.md)).
 | `pandoc_main(argc, argv, filters_json, filters, n)` | the `pandoc` command in process (standard input and output, pandoc's exit status), `pandoc lua` too |
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
 | `pandoc_set_num_threads(n)` | the number of threads pandoc grows to (below) |
+| `pandoc_cancel_token_new()`, `pandoc_cancel(t)`, `pandoc_cancel_token_free(t)` | stop a running call from another thread (1.13: below) |
 | `pandoc_init()`, `pandoc_shutdown()` | start the runtime (implicit), stop it (at the end, optional) |
 | `pandoc_abi_version()` | the loaded library's interface version |
 
@@ -69,7 +70,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.12 now; the embedded pandoc's version and its
+are this C interface's own, 1.13 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -160,6 +161,28 @@ path it names lies outside those directories, though nothing of what is
 there. Where even that must stay hidden, run the conversion where only
 those directories exist: a container, or a virtual machine.
 
+### Cancelling a call
+
+So that a binding can stop a long conversion (Ctrl-C, a cancel button),
+1.13 has cancel tokens: `pandoc_cancel_token_new()` makes one (a number),
+a call takes it as `"cancel-token": N` in its options (`pandoc_convert`,
+`pandoc_read_many`), and `pandoc_cancel(N)`, from any other thread, stops
+every call using it: they fail with the error kind `"Cancelled"`, as a
+`"timeout"` makes `"Timeout"` (temporary files removed, a JSON filter
+terminated, the library usable), `pandoc_read_many` as a whole. A token
+stays cancelled (a cancel just before the call starts isn't lost), serves
+any number of calls until then, and is freed with
+`pandoc_cancel_token_free`; a number that is no token is an option error,
+and cancelling or freeing it does nothing. Calls a callback filter makes
+on its thread are cancelled with its conversion. The limits are
+`"timeout"`'s: not a callback (it runs to its end, then the call fails),
+not Lua, not a loop of pandoc's that doesn't allocate. These functions
+are not async-signal-safe: a signal handler wakes a normal thread that
+cancels (Python's handlers and Julia's InterruptException run on one
+already; Rust's `ctrlc` runs its handler on a thread of its own).
+libpandoc.wasm doesn't export them (one thread: a host stops the instance
+from outside). The header has the rest.
+
 ### Filters in the caller's language
 
 `pandoc_convert_filters` runs filters the caller implements (a C function
@@ -180,7 +203,16 @@ upstream's names if they differ. And the writer's options (1.10:
 gives Lua filters only: Lua's fields and values, keyed as pandoc's JSON
 keys the reader's options (`number-sections`, `top-level-division`,
 `math-method`), so that a filter ported from Lua (`-N`,
-`--top-level-division`) finds what it read there.
+`--top-level-division`) finds what it read there. And whether pandoc's
+sandbox is on (1.13: `PANDOC_SANDBOX=true`, a callback's `"sandbox":
+true`, also in `{"query": "parse-args"}`'s answer), however it was set
+(options, `--sandbox`, a defaults file, `"untrusted"`), so that a filter
+parsing the document's text through pandoc (`pandoc_read_many`) does it
+in the sandbox too, as a Lua filter's `pandoc.read` runs inside the
+conversion. In libpandoc.wasm it says the same, pandoc's own sandbox: the
+module can't know which directories its host opened to it, so a host
+running a conversion in its directory sandbox tells the filters it runs
+outside the module `true` itself.
 
 ```c
 static int shout(void *data, const char *doc, size_t len,
@@ -228,7 +260,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.12 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.13 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the
@@ -261,4 +293,33 @@ that needs a fixed library pins a tagged release by its SHA-256 instead.
 
 ## License
 
-GPL-2.0-or-later, as pandoc.
+libpandoc's own code is GPL-2.0-or-later, as pandoc (`COPYING.md`). Its
+builds link pandoc and about 200 other Haskell packages, GHC's runtime and
+a few C libraries, each under its own licence: every release archive has
+a `THIRD-PARTY-NOTICES` beside `COPYING.md`, and libpandoc.wasm its
+`libpandoc-wasm-THIRD-PARTY-NOTICES.txt`, written by the build from cabal's
+plan (`scripts/notices.py`: each package's licence and the files it ships,
+then the C libraries, whether the archive has each or takes the system's,
+and their texts from `licenses/`), so they can't fall behind it; a
+package or library whose licence can't be found fails the build. Some of
+those packages are GPL-2.0-only (pandoc's skylighting and texmath), so a
+build as a whole is under the GPL, version 2, as pandoc's own binaries.
+
+The source: everything a release is built from is this repository at the
+commit its build provenance attestation names (`gh attestation verify`,
+above), which pins the rest: `pins.env` (pandoc, the Hackage index state,
+GHC, cabal, ghc-wasm-meta), `cabal.project` and `cabal-wasm.project` (the
+git packages by commit, and `wasm/patches`), and the CI workflow (the
+build scripts, container images by digest). The Haskell packages are
+Hackage's at that index state, at the versions the notices list. Not
+pinned there: the C libraries an archive includes come with GHC's
+toolchain (libffi; on Windows, statically, GMP and the rest) or the build
+machine (GMP from Homebrew on macOS); the notices name them, not their
+sources' versions.
+
+What a binding that redistributes libpandoc carries: the release's
+`COPYING.md` and `THIRD-PARTY-NOTICES` (or the module's notices), which
+also have the texts of the C libraries the archive takes from the system
+(on Linux: GMP, zlib, libstdc++ and libgcc), for a package that bundles
+them anyway (auditwheel grafts GMP into a manylinux wheel, and whatever its
+policy doesn't allow into a musllinux one: `auditwheel show` lists them).

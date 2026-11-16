@@ -31,6 +31,9 @@ extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
 extern pandoc_result *libpandoc_hs_convert_filters(char *options, size_t options_len,
                                                    char *input, size_t input_len, int has_input,
                                                    void *filters, size_t filters_len);
+extern int64_t libpandoc_hs_cancel_token_new(void);
+extern int libpandoc_hs_cancel(int64_t token);
+extern void libpandoc_hs_cancel_token_free(int64_t token);
 
 static int init_status = -1;
 
@@ -94,6 +97,32 @@ static void restore_sigpipe(const sigpipe_state *s)
 }
 #endif
 static THREAD_LOCAL sigpipe_state call_sigpipe;
+
+/* Standard input: pandoc closes it when it has read it (pandoc_main, a
+ * conversion given no input), as the command does, so descriptor 0 is free
+ * and the next file the process opens takes it: the runtime's own (an
+ * epoll descriptor, when pandoc grows its threads), or the host's. Then
+ * whatever reads standard input reads that (`pandoc lua` failed, or hung).
+ * So a call that found descriptor 0 open and leaves it closed puts
+ * /dev/null there, and later reads find nothing. (Not if something took it
+ * during the call, which only a call on another thread can.) Not on
+ * Windows nor in libpandoc.wasm. */
+#if defined(__wasm__) || defined(_WIN32)
+static int stdin_open(void) { return 0; }
+static void stdin_reopen(int was_open) { (void)was_open; }
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+static int stdin_open(void) { return fcntl(0, F_GETFD) != -1; }
+static void stdin_reopen(int was_open)
+{
+    int fd;
+    if (!was_open || fcntl(0, F_GETFD) != -1 || errno != EBADF) return;
+    fd = open("/dev/null", O_RDONLY);
+    if (fd > 0) close(fd); /* 0 was taken meanwhile */
+}
+#endif
 
 static int enter(void)
 {
@@ -250,10 +279,12 @@ pandoc_result *pandoc_convert(const char *options, size_t options_len,
                               const char *input, size_t input_len)
 {
     pandoc_result *r;
+    int in = input == NULL && stdin_open();
     if (enter() != 0) return NULL;
     RETRY_LOST_WAKEUP(r, input != NULL,
                       libpandoc_hs_convert((char *)options, options_len,
                                            (char *)input, input_len, input != NULL));
+    stdin_reopen(in);
     leave();
     return r;
 }
@@ -262,10 +293,12 @@ pandoc_result *pandoc_convert_args(int argc, const char *const *argv,
                                    const char *input, size_t input_len)
 {
     pandoc_result *r;
+    int in = input == NULL && stdin_open();
     if (enter() != 0) return NULL;
     RETRY_LOST_WAKEUP(r, input != NULL,
                       libpandoc_hs_convert_args(argc, (char **)argv,
                                                 (char *)input, input_len, input != NULL));
+    stdin_reopen(in);
     leave();
     return r;
 }
@@ -275,11 +308,13 @@ pandoc_result *pandoc_convert_filters(const char *options, size_t options_len,
                                       const pandoc_filter *filters, size_t filters_len)
 {
     pandoc_result *r;
+    int in = input == NULL && stdin_open();
     if (enter() != 0) return NULL;
     RETRY_LOST_WAKEUP(r, input != NULL,
                       libpandoc_hs_convert_filters((char *)options, options_len,
                                                    (char *)input, input_len, input != NULL,
                                                    (void *)filters, filters_len));
+    stdin_reopen(in);
     leave();
     return r;
 }
@@ -289,11 +324,13 @@ pandoc_result *pandoc_convert_args_filters(int argc, const char *const *argv,
                                            const pandoc_filter *filters, size_t filters_len)
 {
     pandoc_result *r;
+    int in = input == NULL && stdin_open();
     if (enter() != 0) return NULL;
     RETRY_LOST_WAKEUP(r, input != NULL,
                       libpandoc_hs_convert_args_filters(argc, (char **)argv,
                                                         (char *)input, input_len, input != NULL,
                                                         (void *)filters, filters_len));
+    stdin_reopen(in);
     leave();
     return r;
 }
@@ -372,6 +409,57 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
 }
 
+/* Cancelling. The tokens live in LibPandoc.hs; these only enter it, like
+ * pandoc_set_num_threads: not as a call (they don't grow pandoc's threads,
+ * and may be made while a call runs, from any thread, from a callback),
+ * with SIGPIPE blocked for any thread the runtime starts meanwhile. */
+int64_t pandoc_cancel_token_new(void)
+{
+    sigpipe_state s;
+    int64_t r;
+    if (pandoc_init() != 0) return 0;
+    block_sigpipe(&s);
+    r = libpandoc_hs_cancel_token_new();
+    restore_sigpipe(&s);
+    return r;
+}
+
+int pandoc_cancel(int64_t token)
+{
+    sigpipe_state s;
+    int r;
+    if (pandoc_init() != 0) return -1;
+    block_sigpipe(&s);
+    r = libpandoc_hs_cancel(token);
+    restore_sigpipe(&s);
+    return r;
+}
+
+void pandoc_cancel_token_free(int64_t token)
+{
+    sigpipe_state s;
+    if (pandoc_init() != 0) return;
+    block_sigpipe(&s);
+    libpandoc_hs_cancel_token_free(token);
+    restore_sigpipe(&s);
+}
+
+/* The cancel tokens of the conversion whose callback filter runs on this
+ * thread (LibPandoc.hs's StablePtr, or NULL), which the calls the filter
+ * makes from it inherit: set around the callback, on the conversion's own
+ * (bound) thread, so restored in order however calls nest. */
+static THREAD_LOCAL void *cancel_scope = NULL;
+
+void *libpandoc_cancel_scope(void)
+{
+    return cancel_scope;
+}
+
+void libpandoc_set_cancel_scope(void *scope)
+{
+    cancel_scope = scope;
+}
+
 int pandoc_set_num_threads(int n)
 {
     sigpipe_state s;
@@ -387,7 +475,7 @@ int pandoc_main(int argc, const char *const *argv,
                 const char *filters_json, size_t filters_json_len,
                 const pandoc_filter *filters, size_t filters_len)
 {
-    int r;
+    int r, in = stdin_open();
     if (enter() != 0) return 1;
     r = libpandoc_hs_main(argc, (char **)argv, (char *)filters_json, filters_json_len,
                              (void *)filters, filters_len);
@@ -395,6 +483,7 @@ int pandoc_main(int argc, const char *const *argv,
      * flush: before the host writes anything else */
     fflush(stdout);
     fflush(stderr);
+    stdin_reopen(in);
     leave();
     return r;
 }

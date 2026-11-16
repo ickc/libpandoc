@@ -3,6 +3,8 @@
 # dist/wasm):
 #
 #   $1/libpandoc.wasm   optimized (wasm-opt -Oz), without debug info
+#   $1/libpandoc-wasm-THIRD-PARTY-NOTICES.txt
+#                       the licences of what it is built from (notices.py)
 #
 # The toolchain (ghc-wasm-meta at $GHC_WASM_META_REV, from pins.env) goes in
 # $GHC_WASM_PREFIX (default ~/.ghc-wasm), installed unless already there,
@@ -49,3 +51,8 @@ else
 	wasm-opt -Oz --strip-debug "$bin" -o "$out/libpandoc.wasm"
 fi
 ls -l "$out/libpandoc.wasm"
+"$(bash scripts/python.sh)" scripts/notices.py --plan dist-wasm/cache/plan.json \
+	--component exe:libpandoc-wasm --store "$(wasm32-wasi-cabal path --store-dir | tail -1)" \
+	--ghc-libdir "$(wasm32-wasi-ghc --print-libdir)" --target wasm \
+	--out "$out/libpandoc-wasm-THIRD-PARTY-NOTICES.txt" \
+	--artifact "This is libpandoc.wasm (and so libpandoc-pyodide.mjs, which loads it)."

@@ -9,6 +9,9 @@
 #   $1/share/libpandoc/api-version.json  (written by the smoke test)
 #   $1/share/libpandoc/examples/smoke.c
 #   $1/lib/pkgconfig/libpandoc.pc  (Linux, macOS; relative to itself)
+#   $1/COPYING.md                  (libpandoc's licence, the GPL; and
+#   $1/THIRD-PARTY-NOTICES          what it is built from, written next by
+#                                   build.sh: scripts/notices.py)
 #
 # On Linux, the Haskell packages are linked into libpandoc.so itself
 # (scripts/merge-link.sh), except GHC's non-reinstallable libraries (base,
@@ -28,7 +31,7 @@ cp test/smoke.c "$out/share/libpandoc/examples/"
 # pkg-config, relocatable (${pcfiledir}): `pkg-config --cflags --libs libpandoc`
 if [[ "$(uname -s)" == Linux || "$(uname -s)" == Darwin ]]; then
 	mkdir -p "$out/lib/pkgconfig"
-	# the C interface's version (pkg-config --atleast-version=1.12), not the
+	# the C interface's version (pkg-config --atleast-version=1.13), not the
 	# cabal package's; pandoc's is in the description
 	version=$(awk '/#define LIBPANDOC_ABI_VERSION_MAJOR/ {M=$3} /#define LIBPANDOC_ABI_VERSION_MINOR/ {m=$3} END {print M "." m}' include/libpandoc.h)
 	cat >"$out/lib/pkgconfig/libpandoc.pc" <<-EOF

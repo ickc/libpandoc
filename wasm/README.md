@@ -18,7 +18,14 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `pandoc_main` (1.11), `pandoc_result_free`, `pandoc_buffer_set`,
   `malloc`, `free`, `chdir` (wasi-libc's: pandoc's working directory).
   Call `_initialize` (WASI's reactor start), then `pandoc_init`. Not
-  `pandoc_set_num_threads` (one thread) nor `pandoc_shutdown`.
+  `pandoc_set_num_threads` (one thread) nor `pandoc_shutdown`, nor the
+  cancel functions (1.13): with one thread nothing can call them while a
+  call runs, so a host stops a call from outside (wasmtime's epoch
+  interruption, a Worker's `terminate()`), which stops the instance (see
+  "When an instance stops"); `"cancel-token"` there names no token. A
+  callback's `"sandbox"` (1.13) is pandoc's own sandbox: the module can't
+  know which directories its host opened, so a host running it as a
+  directory sandbox tells the filters it runs outside it `true` itself.
 - **The command:** `pandoc_main` runs `pandoc ARGS` in the module, on WASI's
   standard input, output and error (the host's to connect: `node.mjs`'s
   are the process's, `browser.mjs`'s an empty input and the console), and
@@ -71,7 +78,18 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
 - **Hosts:** `wasm/core.mjs` is the ABI over wasm memory: `abi`, byte for
   byte what libpandoc-python's `_core` does (its Pyodide backend calls it),
   and on top `convert`, `convertWithFilters` (JS filters, or `raw` JSON
-  text ones), `query`, `readMany`. `wasm/node.mjs` runs it with `node:wasi`
+  text ones), `query`, `read`, `readMany`. `convert`'s output is text,
+  or bytes for the binary writers (docx, odt, epub, pptx, ...), as the
+  other bindings' (`{ bytes: true }` or `false` to choose; text that isn't
+  UTF-8 is a `TypeError` saying to pass `bytes`). A JS filter is called
+  `fn(doc, ctx, pandoc)`: `pandoc` is the instance it runs in, so a filter
+  written as a module (a TypeScript port) can read fragments the way the
+  conversion reads its input, `pandoc.read(text, ctx)` and
+  `pandoc.readMany(texts, ctx)` (also with panir's `Conversion` for
+  `ctx`: `readOptions` maps either), in pandoc's sandbox when the
+  conversion is sandboxed or doesn't say (options given beside win), or
+  call `convert` and the rest: nested calls into the same instance, to
+  any depth (tested to 20). `wasm/node.mjs` runs it with `node:wasi`
   (real directories preopened), `wasm/browser.mjs` with
   `@bjorn3/browser_wasi_shim` (`/tmp` in memory, or any directories given;
   run it in a Worker). Calls are synchronous, one at a time per instance;
@@ -120,14 +138,17 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   the rest in `PANDOC_*` variables as pandoc tells JSON filters. It is
   compiled once and instantiated per run, synchronously, with an in-memory
   stdin and stdout, seeing only the directories given
-  (`browser_wasi_shim`, in the browser and Node alike). The same file runs
+  (`browser_wasi_shim`, in the browser and Node alike): by default, in
+  Node, the working directory, read-only, as `.` (`node-dir.mjs`: a link
+  or `..` leaving it is refused), as pandocrs, pandocpy and pandocjl give
+  it; in a browser none, there being no working directory. The same file runs
   in pandocrs (libpandoc-rs, wasmtime). Tested in Node
   (`test-wasm-filter.mjs`) and in browsers (`WASM_FILTERS=... node
   wasm/test-browser.mjs`: Chromium 153, Firefox 155, WebKit 26.6).
   A filter may call pandoc (libpandoc-rs's `libpandoc::read_many` and the
-  like, built for wasm, import them from a `libpandoc` module): given
-  `{ pandoc }`, those calls go to this libpandoc.wasm, marked
-  `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
+  like, built for wasm, import them from a `libpandoc` module): those calls
+  go to the libpandoc.wasm it runs in (or the one given as `{ pandoc }`),
+  marked `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
   options that read or write files, fetch resources or run programs (the
   list every host shares, in `LibPandoc.Untrusted`).
   The same `"untrusted": true` works in `convert`'s options for untrusted
