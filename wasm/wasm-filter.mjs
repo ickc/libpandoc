@@ -192,6 +192,8 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens = [], 
     if (pandocVersion) env.push(`PANDOC_VERSION=${pandocVersion}`);
     if (ctx["input-format"]) env.push(`PANDOC_INPUT_FORMAT=${ctx["input-format"]}`);
     if (ctx["output-format"]) env.push(`PANDOC_OUTPUT_FORMAT=${ctx["output-format"]}`);
+    // (libpandoc 1.13)
+    if (typeof ctx.sandbox === "boolean") env.push(`PANDOC_SANDBOX=${ctx.sandbox}`);
     const stdout = new File([]);
     const fds = [
       new OpenFile(new File(doc)),

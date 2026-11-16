@@ -300,8 +300,9 @@ withHooks filters n opts engine = engine { engineApplyFilter = apply }
 
 -- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
 -- interpreter by file extension, the same environment), and also tell it
--- the input and output formats, and the writer's options, as pandoc tells
--- only Lua filters ("LibPandoc.WriterOptions").
+-- the input and output formats, the writer's options, as pandoc tells
+-- only Lua filters ("LibPandoc.WriterOptions"), and whether pandoc's
+-- sandbox is on (so that what it reads through pandoc is sandboxed too).
 runJSONFilter :: Opt -> Environment -> [String] -> FilePath -> Pandoc
               -> IO (Either PandocError Pandoc)
 #if defined(wasm32_HOST_ARCH)
@@ -340,6 +341,7 @@ runJSONFilter opts fenv args f doc = do
                   UTF8.toStringLazy (writerOptionsVariable (envWriterOptions fenv)))
                : ("PANDOC_INPUT_FORMAT", T.unpack (inputFormat opts))
                : ("PANDOC_OUTPUT_FORMAT", T.unpack (outputFormat opts))
+               : ("PANDOC_SANDBOX", if optSandbox opts then "true" else "false")
                : env
       -- (not the time limit's exception, which ends the filter: pipeProcess
       -- sends it SIGTERM and reaps it)
@@ -363,7 +365,8 @@ runCallback filters k opts env args doc = bracket bufferNew bufferFree $ \buf ->
         , "input-format" .= inputFormat opts
         , "output-format" .= outputFormat opts
         , "reader-options" .= envReaderOptions env
-        , "writer-options" .= writerOptionsJSON (envWriterOptions env) ]
+        , "writer-options" .= writerOptionsJSON (envWriterOptions env)
+        , "sandbox" .= optSandbox opts ]
   -- the bytes themselves, not a copy with a NUL (the header promises
   -- none): a strict ByteString's buffer is pinned, so the collector doesn't
   -- move it while fn runs (a safe call, during which other threads may
@@ -628,7 +631,7 @@ parseArgs args = do
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
   case parsed of
     Right opts -> pure $ BL.toStrict $ Aeson.encode $
-      Aeson.object [ "filters" .= optFilters opts ]
+      Aeson.object [ "filters" .= optFilters opts, "sandbox" .= optSandbox opts ]
     Left (OptError e) -> throwIO e
     Left info -> pure $ BL.toStrict $ Aeson.encode $
       Aeson.object [ "informational" .= takeWhile (/= ' ') (show info) ]

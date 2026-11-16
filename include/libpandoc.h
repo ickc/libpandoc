@@ -122,12 +122,14 @@ extern "C" {
  * and a conversion whose temporary directory can't be removed fails;
  * libpandoc.wasm exports pandoc_main; pandoc_main --help names argv[0];
  * 1.12: SIGPIPE is blocked in the threads that run pandoc (pandoc_init);
- * a NUL in an error's message is U+FFFD).
+ * a NUL in an error's message is U+FFFD;
+ * 1.13: filters are told whether pandoc's sandbox is on: a callback's
+ * "sandbox", PANDOC_SANDBOX, and parse-args's "sandbox").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 12
+#define LIBPANDOC_ABI_VERSION_MINOR 13
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -358,7 +360,19 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args(int argc, const char *const *ar
  *              text), ...; not the syntax definitions. In
  *              PANDOC_WRITER_OPTIONS without "variables" when the whole would
  *              be longer than 32,000 bytes (an environment variable's limit,
- *              on Windows).
+ *              on Windows);
+ *            "sandbox": true when pandoc's sandbox is on for the conversion
+ *              (from 1.13), however it was set: "sandbox": true or
+ *              "untrusted" in the options, --sandbox, a defaults file; else
+ *              false. What a JSON filter run by libpandoc gets in
+ *              PANDOC_SANDBOX ("true" or "false"; pandoc tells filters
+ *              nothing of it). So that a filter parsing the document's text
+ *              (pandoc_read_many) reads it in the sandbox too, as a Lua
+ *              filter's pandoc.read runs inside the conversion. In
+ *              libpandoc.wasm it says the same, pandoc's own sandbox: the
+ *              module can't know which directories its host opened to it,
+ *              so a host running the conversion in a directory sandbox says
+ *              true itself to the filters it runs outside the module.
  * Neither is NUL-terminated, and both are valid only during the call.
  *
  * fn returns 0 and puts the new document, as pandoc's JSON, in out with
@@ -503,7 +517,9 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *   {"query": "parse-args", "args": [...]}
  *                                         what pandoc makes of these
  *                                         command-line arguments: {"filters":
- *                                         [...]} (defaults files included),
+ *                                         [...], "sandbox": true|false}
+ *                                         (defaults files included;
+ *                                         "sandbox" from 1.13: --sandbox),
  *                                         or {"informational": "VersionInfo"},
  *                                         or {"subcommand": "lua"} (or
  *                                         "server"), whose arguments aren't

@@ -69,7 +69,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.12 now; the embedded pandoc's version and its
+are this C interface's own, 1.13 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -180,7 +180,16 @@ upstream's names if they differ. And the writer's options (1.10:
 gives Lua filters only: Lua's fields and values, keyed as pandoc's JSON
 keys the reader's options (`number-sections`, `top-level-division`,
 `math-method`), so that a filter ported from Lua (`-N`,
-`--top-level-division`) finds what it read there.
+`--top-level-division`) finds what it read there. And whether pandoc's
+sandbox is on (1.13: `PANDOC_SANDBOX=true`, a callback's `"sandbox":
+true`, also in `{"query": "parse-args"}`'s answer), however it was set
+(options, `--sandbox`, a defaults file, `"untrusted"`), so that a filter
+parsing the document's text through pandoc (`pandoc_read_many`) does it
+in the sandbox too, as a Lua filter's `pandoc.read` runs inside the
+conversion. In libpandoc.wasm it says the same, pandoc's own sandbox: the
+module can't know which directories its host opened to it, so a host
+running a conversion in its directory sandbox tells the filters it runs
+outside the module `true` itself.
 
 ```c
 static int shout(void *data, const char *doc, size_t len,
@@ -228,7 +237,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.12 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.13 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the
