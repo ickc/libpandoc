@@ -329,6 +329,18 @@ int main(int argc, char **argv)
         pandoc_result_free(r);
     }
 
+    /* the log and the output in the same file: the output wins (pandoc
+     * writes it last), and the log is [] rather than not JSON (the fuzzer) */
+    {
+        const char *o = "{\"to\": \"rtf\", \"output-file\": \"edge-same.out\", \"log-file\": \"edge-same.out\"}";
+        r = pandoc_convert(o, strlen(o), "x", 1);
+        check(r && r->status == 0 && strcmp(r->log, "[]") == 0,
+              "a log file that is the output file: the log is []");
+        if (r) printf("      log: %.80s\n", r->log);
+        pandoc_result_free(r);
+        remove("edge-same.out");
+    }
+
     remove("edge-in.md");
     return failures != 0;
 }

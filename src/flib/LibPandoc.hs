@@ -893,7 +893,10 @@ convert engineWith noUserData opts input = withTempDirectory $ \tmp -> do
   -- caller's own log file then, which may be an earlier conversion's
   logged <- doesFileExist logFile
   let fresh = either (const (isNothing (optLogFile opts))) (const True) done
-  logJson <- if logged && fresh then B.readFile logFile else pure "[]"
+  logRead <- if logged && fresh then B.readFile logFile else pure "[]"
+  -- (not JSON when the options name the same file for the log and the
+  -- output, which pandoc writes last)
+  let logJson = if isJust (Aeson.decodeStrict logRead :: Maybe [Aeson.Value]) then logRead else "[]"
   case done of
     Left (e :: SomeException) -> pure $ Result B.empty (Just (describe e)) logJson
     Right () -> do

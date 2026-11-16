@@ -86,6 +86,7 @@ Lua's "not enough memory" panic), kept apart so it buries nothing.
 | dokuwiki: unclosed `((`, `<sup>`, `<del>` are exponential (16 `((`: 24 s) | hang | pandoc | upstream: `printf '((%.0s' {1..16} \| pandoc -f dokuwiki` |
 | after `pandoc_main` reads standard input, descriptor 0 is closed and taken by the runtime's next file (epoll): `pandoc lua` then reads that and hangs | hang | libpandoc | fixed (1.13: descriptor 0 is /dev/null then), `test/edge.c` |
 | out of memory under the cap: Lua's panic (abort), and `hsluaL_newstate` using a NULL `lua_State` (SIGSEGV) | oom, crash (139) | hslua | upstream: check `luaL_newstate`'s result |
+| the same file as `"log-file"` and `"output-file"`: the result's log was the output, not JSON (2026-11-16, against 1.13) | violation | libpandoc | fixed (1.13: the log is `[]` then), `test/edge.c` |
 
 Then 20 minutes against the fixes (2,706 children, 517,006 calls): no
 SIGPIPE crash, no NUL violation; the `<q` violation again, and one Lua
