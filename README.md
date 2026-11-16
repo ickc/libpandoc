@@ -35,6 +35,7 @@ JavaScript on libpandoc.wasm ([`wasm/`](wasm/README.md)).
 | `pandoc_main(argc, argv, filters_json, filters, n)` | the `pandoc` command in process (standard input and output, pandoc's exit status), `pandoc lua` too |
 | `pandoc_result_free(r)` | frees a result: output bytes, typed error, and pandoc's log as JSON |
 | `pandoc_set_num_threads(n)` | the number of threads pandoc grows to (below) |
+| `pandoc_cancel_token_new()`, `pandoc_cancel(t)`, `pandoc_cancel_token_free(t)` | stop a running call from another thread (1.13: below) |
 | `pandoc_init()`, `pandoc_shutdown()` | start the runtime (implicit), stop it (at the end, optional) |
 | `pandoc_abi_version()` | the loaded library's interface version |
 
@@ -159,6 +160,28 @@ with "does not exist", and pandoc prints some such errors as they are
 path it names lies outside those directories, though nothing of what is
 there. Where even that must stay hidden, run the conversion where only
 those directories exist: a container, or a virtual machine.
+
+### Cancelling a call
+
+So that a binding can stop a long conversion (Ctrl-C, a cancel button),
+1.13 has cancel tokens: `pandoc_cancel_token_new()` makes one (a number),
+a call takes it as `"cancel-token": N` in its options (`pandoc_convert`,
+`pandoc_read_many`), and `pandoc_cancel(N)`, from any other thread, stops
+every call using it: they fail with the error kind `"Cancelled"`, as a
+`"timeout"` makes `"Timeout"` (temporary files removed, a JSON filter
+terminated, the library usable), `pandoc_read_many` as a whole. A token
+stays cancelled (a cancel just before the call starts isn't lost), serves
+any number of calls until then, and is freed with
+`pandoc_cancel_token_free`; a number that is no token is an option error,
+and cancelling or freeing it does nothing. Calls a callback filter makes
+on its thread are cancelled with its conversion. The limits are
+`"timeout"`'s: not a callback (it runs to its end, then the call fails),
+not Lua, not a loop of pandoc's that doesn't allocate. These functions
+are not async-signal-safe: a signal handler wakes a normal thread that
+cancels (Python's handlers and Julia's InterruptException run on one
+already; Rust's `ctrlc` runs its handler on a thread of its own).
+libpandoc.wasm doesn't export them (one thread: a host stops the instance
+from outside). The header has the rest.
 
 ### Filters in the caller's language
 

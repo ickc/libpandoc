@@ -31,6 +31,9 @@ extern pandoc_result *libpandoc_hs_convert_args_filters(int argc, char **argv,
 extern pandoc_result *libpandoc_hs_convert_filters(char *options, size_t options_len,
                                                    char *input, size_t input_len, int has_input,
                                                    void *filters, size_t filters_len);
+extern int64_t libpandoc_hs_cancel_token_new(void);
+extern int libpandoc_hs_cancel(int64_t token);
+extern void libpandoc_hs_cancel_token_free(int64_t token);
 
 static int init_status = -1;
 
@@ -370,6 +373,57 @@ int libpandoc_call_filter(const pandoc_filter *filters, size_t i,
     }
 #endif
     return filters[i].fn(filters[i].userdata, doc, doc_len, context, context_len, out);
+}
+
+/* Cancelling. The tokens live in LibPandoc.hs; these only enter it, like
+ * pandoc_set_num_threads: not as a call (they don't grow pandoc's threads,
+ * and may be made while a call runs, from any thread, from a callback),
+ * with SIGPIPE blocked for any thread the runtime starts meanwhile. */
+int64_t pandoc_cancel_token_new(void)
+{
+    sigpipe_state s;
+    int64_t r;
+    if (pandoc_init() != 0) return 0;
+    block_sigpipe(&s);
+    r = libpandoc_hs_cancel_token_new();
+    restore_sigpipe(&s);
+    return r;
+}
+
+int pandoc_cancel(int64_t token)
+{
+    sigpipe_state s;
+    int r;
+    if (pandoc_init() != 0) return -1;
+    block_sigpipe(&s);
+    r = libpandoc_hs_cancel(token);
+    restore_sigpipe(&s);
+    return r;
+}
+
+void pandoc_cancel_token_free(int64_t token)
+{
+    sigpipe_state s;
+    if (pandoc_init() != 0) return;
+    block_sigpipe(&s);
+    libpandoc_hs_cancel_token_free(token);
+    restore_sigpipe(&s);
+}
+
+/* The cancel tokens of the conversion whose callback filter runs on this
+ * thread (LibPandoc.hs's StablePtr, or NULL), which the calls the filter
+ * makes from it inherit: set around the callback, on the conversion's own
+ * (bound) thread, so restored in order however calls nest. */
+static THREAD_LOCAL void *cancel_scope = NULL;
+
+void *libpandoc_cancel_scope(void)
+{
+    return cancel_scope;
+}
+
+void libpandoc_set_cancel_scope(void *scope)
+{
+    cancel_scope = scope;
 }
 
 int pandoc_set_num_threads(int n)

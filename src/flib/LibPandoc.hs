@@ -50,8 +50,9 @@ import GHC.Clock (getMonotonicTime)
 import System.Mem.Weak (deRefWeak)
 import Control.Monad (forM_, unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Control.Concurrent.MVar (MVar, isEmptyMVar, newEmptyMVar, newMVar, putMVar, readMVar,
+                                takeMVar, tryPutMVar, withMVar)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -65,7 +66,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Unsafe as BU
 import Data.Char (toLower)
 import Data.List (intersperse, stripPrefix)
-import Data.Maybe (fromMaybe, isNothing, listToMaybe, maybeToList)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, maybeToList)
 import Data.Scientific (FPFormat (Fixed), formatScientific, fromFloatDigits, toBoundedInteger,
                         toRealFloat)
 import qualified Data.Text as T
@@ -89,6 +90,7 @@ import Text.Pandoc.App (LineEnding (..), Opt (..), OptInfo (..),
                         convertWithOpts, handleOptInfo,
                         defaultOpts,
                         options, parseOptionsFromArgs, versionInfo)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Citeproc (processCitations)
@@ -144,6 +146,18 @@ foreign export ccall "libpandoc_hs_read_many"
 foreign export ccall "libpandoc_hs_convert_filters"
   hsConvertFilters :: Ptr CChar -> CSize -> Ptr CChar -> CSize -> CInt
                    -> Ptr () -> CSize -> IO (Ptr ())
+foreign export ccall "libpandoc_hs_cancel_token_new"
+  hsCancelTokenNew :: IO Int64
+foreign export ccall "libpandoc_hs_cancel"
+  hsCancel :: Int64 -> IO CInt
+foreign export ccall "libpandoc_hs_cancel_token_free"
+  hsCancelTokenFree :: Int64 -> IO ()
+
+-- cbits: the cancel tokens of the conversion whose callback filter is
+-- running on this OS thread (a StablePtr, or NULL), which a call the filter
+-- makes inherits
+foreign import ccall unsafe "libpandoc_cancel_scope" getCancelScope :: IO (Ptr ())
+foreign import ccall unsafe "libpandoc_set_cancel_scope" setCancelScope :: Ptr () -> IO ()
 
 -- cbits: the buffer a callback filter answers in, and the call itself. Safe,
 -- so that the callback may call libpandoc again.
@@ -170,13 +184,16 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
         -- untrusted code doesn't read the process's stdin
         when (isUntrusted v1 && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
-        v <- untrusted Convert v1
+        -- (after untrusted, which refuses a cancel token)
+        (token, v) <- cancelToken =<< untrusted Convert v1
         v' <- callbackFilters (fromIntegral nFilters) v
-        (,,) limit (isUntrusted v1) <$> Aeson.parseEither Aeson.parseJSON v'
+        (,,,) limit token (isUntrusted v1) <$> Aeson.parseEither Aeson.parseJSON v'
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (limit, noUserData, f :: Opt -> Opt) -> limited limit $
-      convert (withHooks filters (fromIntegral nFilters)) noUserData (f defaultOpts) input
+    Right (limit, token, noUserData, f :: Opt -> Opt) -> do
+      cs <- cancelScope token
+      limited limit $ cancellable cs $
+        convert (withHooks cs filters (fromIntegral nFilters)) noUserData (f defaultOpts) input
 
 -- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
 isUntrusted :: Aeson.Value -> Bool
@@ -279,16 +296,17 @@ withoutCitations opts = case writerFormat of
         | otherwise -> Format.formatFromFilePaths (maybeToList (optOutputFile opts))
 
 -- | The engine, answering the reserved paths: callback filters by calling
--- them, JSON filters by running them, citeproc in the sandbox.
-withHooks :: Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
-withHooks filters n opts engine = engine { engineApplyFilter = apply }
+-- them (calls they make inherit the cancel tokens @cs@), JSON filters by
+-- running them, citeproc in the sandbox.
+withHooks :: [MVar ()] -> Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
+withHooks cs filters n opts engine = engine { engineApplyFilter = apply }
   where
     apply :: (PandocMonad m, MonadIO m)
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
     apply env args path doc
       | Just i <- stripPrefix callbackPrefix path
       , [(k, "")] <- reads i, k >= 0, k < n, filters /= nullPtr = do
-          r <- liftIO $ runCallback filters k opts env args doc
+          r <- liftIO $ withCancelScope cs $ runCallback filters k opts env args doc
           either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
                  pure r
       | Just f <- stripPrefix jsonPrefix path = do
@@ -397,8 +415,10 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   args <- mapM (GHC.peekCString utf8) =<< peekArray (fromIntegral argc) argv
   input <- peekInput inPtr inLen hasIn
   parsed <- parseOptionsFromArgs options defaultOpts "pandoc" args
+  cs <- cancelScope Nothing
   case parsed of
-    Right opts -> convert (withHooks filters (fromIntegral nFilters)) False opts input
+    Right opts -> cancellable cs $
+      convert (withHooks cs filters (fromIntegral nFilters)) False opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -413,16 +433,17 @@ hsReadMany ptr len = respond $ do
         (optsV, o) <- flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o ->
           (\opts -> (fromMaybe (Aeson.object []) opts, o)) <$> o Aeson..:? "options"
         (limit, optsV1) <- timeLimit optsV
-        optsV' <- untrusted ReadMany optsV1
+        (token, optsV') <- cancelToken =<< untrusted ReadMany optsV1
         flip Aeson.parseEither optsV' $ \_ -> do
           f <- Aeson.parseJSON optsV'
           inputs <- o Aeson..: "inputs"
-          pure (limit, f defaultOpts, inputs)
+          pure (limit, token, f defaultOpts, inputs)
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (limit, opts, inputs) -> do
+    Right (limit, token, opts, inputs) -> do
+      cs <- cancelScope token
       deadline <- traverse (\s -> (,) s . (+ s) <$> getMonotonicTime) limit
-      (out, logs) <- readMany deadline opts inputs
+      (out, logs) <- readMany cs deadline opts inputs
       pure $ Result (B.concat ("[" : intersperse "," out ++ ["]"])) Nothing
                     (BL.toStrict (encodeLogMessages logs))
 
@@ -434,12 +455,15 @@ hsReadMany ptr len = respond $ do
 -- setup's, then each input's in order) rather than printed. With a time
 -- limit (its seconds, and the deadline it makes), the call ends by the
 -- deadline: the setup past it fails the call, an input not read by then
--- is a "Timeout" in its place.
-readMany :: Maybe (Double, Double) -> Opt -> [T.Text] -> IO ([B.ByteString], [LogMessage])
-readMany deadline opts inputs = do
+-- is a "Timeout" in its place. Cancelled (@cs@: 'cancellable'), the setup
+-- and every reader stop, and the call fails with 'Cancelled' once they
+-- have.
+readMany :: [MVar ()] -> Maybe (Double, Double) -> Opt -> [T.Text]
+         -> IO ([B.ByteString], [LogMessage])
+readMany cs deadline opts inputs = do
   -- one text needs no threads (a filter's read_as)
   when (length inputs > 1) hsExpandThreads
-  setup <- untilDeadline $ runIO $ do
+  setup <- untilDeadline $ whileNotCancelled cs $ runIO $ do
     prepare
     flvrd <- Format.parseFlavoredFormat (fromMaybe "markdown" (optFrom opts))
     (reader, exts) <- getReader flvrd
@@ -480,17 +504,23 @@ readMany deadline opts inputs = do
         out <- evaluate $ BL.toStrict $ either (Aeson.encode . errorValue) Aeson.encode r
         pure (out, logs)
       -- whatever happens in the thread, its MVar gets an answer
-      answer v = putMVar v <=< \case
+      answer stop v = putMVar v <=< \case
         Right x -> pure x
         Left e -> do
+          when (isJust (fromException e :: Maybe Cancelled)) $ writeIORef stop True
           out <- tryAll (evaluate (BL.toStrict (Aeson.encode (errorValue (toPandocError e)))))
           pure (either (const failed) id out, [])
       failed = "{\"error\":{\"kind\":\"Exception\",\"message\":\"(a message that failed)\"}}"
+  -- (whether a reader was stopped by a cancel)
+  stopped <- newIORef False
   vars <- mapM (\t -> do
                   v <- newEmptyMVar
-                  _ <- forkFinally (untilDeadline (readEncoded t)) (answer v . fmap (fromMaybe timedOut))
+                  _ <- forkFinally (untilDeadline (whileNotCancelled cs (readEncoded t)))
+                                   (answer stopped v . fmap (fromMaybe timedOut))
                   pure v) inputs
   (out, logs) <- unzip <$> mapM takeMVar vars
+  cancelled <- readIORef stopped
+  when cancelled $ throwIO Cancelled
   pure (out, setupLog ++ concat logs)
   where
     -- the action, if it ends before the deadline
@@ -705,8 +735,11 @@ hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
             Left info -> handleOptInfo engine info
             Right opts0 -> do
               let opts = maybe opts0 (\fs -> opts0 { optFilters = fs }) override
-              convertWithOpts (withHooks filters (fromIntegral nFilters) opts engine)
-                              (routeFilters opts)
+              -- (a call from a callback filter: cancelled with its conversion)
+              cs <- cancelScope Nothing
+              whileNotCancelled cs $
+                convertWithOpts (withHooks cs filters (fromIntegral nFilters) opts engine)
+                                (routeFilters opts)
     -- pandoc-cli's, for what pandoc_main does: no server, pandoc lua but
     -- in the wasm build
     features =
@@ -920,6 +953,7 @@ describe e = case fromException e of
   Nothing
     | Just (TimeLimitExceeded s) <- fromException e ->
         ("Timeout", TE.encodeUtf8 (timeLimitMessage "the call" s))
+    | Just Cancelled <- fromException e -> ("Cancelled", B8.pack (show Cancelled))
     | otherwise -> ("Exception", TE.encodeUtf8 (T.pack (message e)))
 
 -- | A call's time limit (libpandoc's option @"timeout"@, not pandoc's): its
@@ -985,6 +1019,113 @@ instance Show TimeUp where show _ = "<<time limit>>"
 instance Exception TimeUp where
   toException = asyncExceptionToException
   fromException = asyncExceptionFromException
+
+-- | Cancel tokens (@pandoc_cancel_token_new@): the last number given, and
+-- the tokens not freed, each an MVar that is full once it is cancelled.
+-- Numbers are never reused, so a stale one names no token.
+cancelTokens :: IORef (Int64, Map.Map Int64 (MVar ()))
+cancelTokens = unsafePerformIO (newIORef (0, Map.empty))
+{-# NOINLINE cancelTokens #-}
+
+hsCancelTokenNew :: IO Int64
+hsCancelTokenNew = handleAll (const (pure 0)) $ do
+  v <- newEmptyMVar
+  atomicModifyIORef' cancelTokens $ \(n, m) -> ((n + 1, Map.insert (n + 1) v m), n + 1)
+
+-- | Cancel a token: 0, or -1 if there is no such token. Nothing but a
+-- 'tryPutMVar', which wakes the watchers of the calls using it
+-- ('whileNotCancelled').
+hsCancel :: Int64 -> IO CInt
+hsCancel k = handleAll (const (pure (-1))) $ do
+  t <- Map.lookup k . snd <$> readIORef cancelTokens
+  case t of
+    Nothing -> pure (-1)
+    Just v -> 0 <$ tryPutMVar v ()
+
+hsCancelTokenFree :: Int64 -> IO ()
+hsCancelTokenFree k = handleAll (const (pure ())) $
+  atomicModifyIORef' cancelTokens $ \(n, m) -> ((n, Map.delete k m), ())
+
+-- | libpandoc's option @"cancel-token"@ (a number from
+-- @pandoc_cancel_token_new@), and the options without it.
+cancelToken :: Aeson.Value -> Either String (Maybe Int64, Aeson.Value)
+cancelToken (Aeson.Object o) = case KM.lookup "cancel-token" o of
+  Nothing -> Right (Nothing, Aeson.Object o)
+  Just (Aeson.Number x) | Just k <- toBoundedInteger x, k > 0 ->
+    Right (Just k, Aeson.Object (KM.delete "cancel-token" o))
+  Just v -> Left ("\"cancel-token\" is a token from pandoc_cancel_token_new, not "
+                  <> UTF8.toStringLazy (Aeson.encode v))
+cancelToken v = Right (Nothing, v)
+
+-- | The tokens a call stops for: its own, and those of the calls it runs
+-- inside (it was made by a callback filter of theirs, on its thread). An
+-- unknown token (freed, or never made) is the caller's mistake: an error,
+-- rather than a call that can't be cancelled.
+cancelScope :: Maybe Int64 -> IO [MVar ()]
+cancelScope token = do
+  own <- case token of
+    Nothing -> pure []
+    Just k -> Map.lookup k . snd <$> readIORef cancelTokens >>= \case
+      Just v -> pure [v]
+      Nothing -> throwIO $ PandocOptionError $ "\"cancel-token\": " <> T.pack (show k)
+        <> " is no token (freed, or not from pandoc_cancel_token_new)"
+  p <- getCancelScope
+  inherited <- if p == nullPtr then pure [] else deRefStablePtr (castPtrToStablePtr p)
+  pure (own ++ inherited)
+
+-- | Run a callback with @cs@ as the tokens that calls it makes on its thread
+-- inherit (the C side keeps them per thread, as a StablePtr).
+withCancelScope :: [MVar ()] -> IO a -> IO a
+withCancelScope [] act = act
+withCancelScope cs act = bracket
+  (do old <- getCancelScope
+      sp <- newStablePtr cs
+      setCancelScope (castStablePtrToPtr sp)
+      pure (old, sp))
+  (\(old, sp) -> setCancelScope old >> freeStablePtr sp)
+  (const act)
+
+isCancelled :: [MVar ()] -> IO Bool
+isCancelled = fmap or . mapM (fmap not . isEmptyMVar)
+
+-- | A call that was cancelled.
+data Cancelled = Cancelled
+instance Show Cancelled where show _ = "the call was cancelled (pandoc_cancel)"
+instance Exception Cancelled
+
+-- | The exception a watcher stops its call with: asynchronous, as 'TimeUp'.
+newtype CancelUp = CancelUp Unique
+instance Show CancelUp where show _ = "<<cancelled>>"
+instance Exception CancelUp where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
+
+-- | Run an action until one of the tokens @cs@ is cancelled: then it is
+-- stopped, as by a time limit ('within', the same way: a watcher thread per
+-- token, holding this one by a weak reference, killed when the action
+-- ends, so that nothing arrives after), and fails with 'Cancelled', at once
+-- if a token already is. Not in a foreign call (a callback filter, Lua):
+-- the exception arrives when the call returns.
+whileNotCancelled :: [MVar ()] -> IO a -> IO a
+whileNotCancelled [] act = act
+whileNotCancelled cs act = do
+  already <- isCancelled cs
+  when already $ throwIO Cancelled
+  me <- mkWeakThreadId =<< myThreadId
+  u <- newUnique
+  let watch v = forkIOWithUnmask $ \unmask ->
+        unmask (readMVar v >> deRefWeak me >>= mapM_ (`throwTo` CancelUp u))
+  E.handleJust (\(CancelUp u') -> if u == u' then Just () else Nothing) (\() -> throwIO Cancelled) $
+    bracket (mapM watch cs) (E.uninterruptibleMask_ . mapM_ killThread) (const act)
+
+-- | A conversion under 'whileNotCancelled'; also one that failed once
+-- cancelled (pandoc's code may have caught the exception and made an error
+-- of its own of it) fails with 'Cancelled'. One that ended well is kept.
+cancellable :: [MVar ()] -> IO Result -> IO Result
+cancellable cs act = do
+  r <- whileNotCancelled cs act
+  stopped <- if isJust (resultError r) then isCancelled cs else pure False
+  if stopped then throwIO Cancelled else pure r
 
 -- | 'try', but not for asynchronous exceptions (a time limit, a thread
 -- killed), which aren't the action's failure: they go on.

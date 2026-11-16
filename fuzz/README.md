@@ -42,6 +42,9 @@ per reader (a sample written by the writer of the same name).
   metadata bibliographies with citeproc).
 - Callback filters that answer the document, a truncated or huge one,
   random bytes, deep JSON, nothing, or fail; or call pandoc again.
+- Cancel tokens (1.13): a quarter of the conversions and `read_many`
+  calls get one, which another thread cancels (or frees, or leaves) after
+  up to 0.8 s.
 - A canary: files, and a user data directory (`HOME`, `XDG_DATA_HOME`) with
   templates and translations, whose content must never come out of an
   untrusted call.
@@ -55,6 +58,9 @@ per reader (a sample written by the writer of the same name).
   `read_many`'s and queries' output is JSON; a callback is given JSON.
 - A call with a time limit and no Lua or callback filter returns within
   the limit and 30 s.
+- A cancelled call with no Lua or callback filter returns within 30 s of
+  the cancel; a call fails with `"Cancelled"` only if its token was
+  cancelled; `pandoc_cancel` answers 0 for a token, -1 once it is freed.
 - Untrusted calls: no canary content in output, message or log; and in
   the traced children (all calls untrusted), no canary file opened.
 - At a child's end: no temporary directory left in `TMPDIR`, no
