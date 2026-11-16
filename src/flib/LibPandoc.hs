@@ -1030,7 +1030,8 @@ cancelTokens = unsafePerformIO (newIORef (0, Map.empty))
 hsCancelTokenNew :: IO Int64
 hsCancelTokenNew = handleAll (const (pure 0)) $ do
   v <- newEmptyMVar
-  atomicModifyIORef' cancelTokens $ \(n, m) -> ((n + 1, Map.insert (n + 1) v m), n + 1)
+  atomicModifyIORef' cancelTokens $ \(n, m) ->
+    let m' = Map.insert (n + 1) v m in m' `seq` ((n + 1, m'), n + 1)
 
 -- | Cancel a token: 0, or -1 if there is no such token. Nothing but a
 -- 'tryPutMVar', which wakes the watchers of the calls using it
@@ -1044,7 +1045,7 @@ hsCancel k = handleAll (const (pure (-1))) $ do
 
 hsCancelTokenFree :: Int64 -> IO ()
 hsCancelTokenFree k = handleAll (const (pure ())) $
-  atomicModifyIORef' cancelTokens $ \(n, m) -> ((n, Map.delete k m), ())
+  atomicModifyIORef' cancelTokens $ \(n, m) -> let m' = Map.delete k m in m' `seq` ((n, m'), ())
 
 -- | libpandoc's option @"cancel-token"@ (a number from
 -- @pandoc_cancel_token_new@), and the options without it.

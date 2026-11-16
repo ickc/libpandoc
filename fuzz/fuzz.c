@@ -898,6 +898,8 @@ static int64_t maybe_token(rng *r, canceller *c)
 static void cancel_start(canceller *c)
 {
     if (c->token) c->started = !pthread_create(&c->t, NULL, cancel_later, c);
+    /* no thread (out of memory under the cap): nothing cancels or frees it */
+    if (c->token && !c->started) c->how = 2;
 }
 
 /* after the call (given: what the options named, optinfo's token): a
