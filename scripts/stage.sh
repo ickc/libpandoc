@@ -9,6 +9,9 @@
 #   $1/share/libpandoc/api-version.json  (written by the smoke test)
 #   $1/share/libpandoc/examples/smoke.c
 #   $1/lib/pkgconfig/libpandoc.pc  (Linux, macOS; relative to itself)
+#   $1/COPYING.md                  (libpandoc's licence, the GPL; and
+#   $1/THIRD-PARTY-NOTICES          what it is built from, written next by
+#                                   build.sh: scripts/notices.py)
 #
 # On Linux, the Haskell packages are linked into libpandoc.so itself
 # (scripts/merge-link.sh), except GHC's non-reinstallable libraries (base,

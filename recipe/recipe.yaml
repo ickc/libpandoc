@@ -67,7 +67,9 @@ about:
   homepage: https://github.com/ickc/libpandoc
   repository: https://github.com/ickc/libpandoc
   license: GPL-2.0-or-later
-  license_file: COPYING.md
+  license_file:
+    - COPYING.md
+    - THIRD-PARTY-NOTICES
   summary: pandoc as a C library
   description: |
     A shared library exposing pandoc (${{ pandoc_version }}) through a small,

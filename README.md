@@ -293,4 +293,29 @@ that needs a fixed library pins a tagged release by its SHA-256 instead.
 
 ## License
 
-GPL-2.0-or-later, as pandoc.
+libpandoc's own code is GPL-2.0-or-later, as pandoc (`COPYING.md`). Its
+builds link pandoc and about 200 other Haskell packages, GHC's runtime and
+a few C libraries, each under its own licence: every release archive has
+a `THIRD-PARTY-NOTICES` beside `COPYING.md`, and libpandoc.wasm its
+`libpandoc-wasm-THIRD-PARTY-NOTICES.txt`, written by the build from cabal's
+plan (`scripts/notices.py`: each package's licence and the files it ships,
+then the C libraries, whether the archive has each or takes the system's,
+and their texts from `licenses/`), so they can't fall behind it; a
+package or library whose licence can't be found fails the build. Some of
+those packages are GPL-2.0-only (pandoc's skylighting and texmath), so a
+build as a whole is under the GPL, version 2, as pandoc's own binaries.
+
+The source: everything a release is built from is this repository at the
+commit its build provenance attestation names (`gh attestation verify`,
+above), which pins the rest: `pins.env` (pandoc, the Hackage index state,
+GHC, cabal, ghc-wasm-meta), `cabal.project` and `cabal-wasm.project` (the
+git packages by commit, and `wasm/patches`), and the CI workflow (the
+build scripts, container images by digest). The Haskell packages are
+Hackage's at that index state, at the versions the notices list.
+
+What a binding that redistributes libpandoc carries: the release's
+`COPYING.md` and `THIRD-PARTY-NOTICES` (or the module's notices), which
+also have the texts of the C libraries the archive takes from the system
+(on Linux: GMP, zlib, libstdc++ and libgcc), for a package that bundles
+them anyway (auditwheel grafts GMP into a manylinux wheel, and whatever its
+policy doesn't allow into a musllinux one: `auditwheel show` lists them).

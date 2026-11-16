@@ -303,10 +303,12 @@ jobs:
           path: |
             dist/wasm/libpandoc.wasm
             dist/wasm/libpandoc-pyodide.mjs
+            dist/wasm/libpandoc-wasm-THIRD-PARTY-NOTICES.txt
 
   # Every push to main replaces the assets of the `continuous` pre-release,
-  # which downstream CI (libpandoc-python) downloads: the native builds,
-  # libpandoc.wasm and its bundled JS for Pyodide; with SHA256SUMS, and a
+  # which downstream CI (libpandoc-python) downloads: the native builds
+  # (each with its THIRD-PARTY-NOTICES), libpandoc.wasm, its notices and its
+  # bundled JS for Pyodide; with SHA256SUMS, and a
   # build provenance attestation of each (README: "Verifying a download").
   # Only from main (not from pull requests, forks' included), one run at a
   # time in order (the workflow's concurrency, and this job's).
@@ -332,7 +334,7 @@ jobs:
           name: wasm-libpandoc
       - name: Checksums
         run: |
-          sha256sum libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs > SHA256SUMS
+          sha256sum libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs libpandoc-wasm-THIRD-PARTY-NOTICES.txt > SHA256SUMS
           cat SHA256SUMS
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -341,6 +343,7 @@ jobs:
             libpandoc-*.tar.gz
             libpandoc.wasm
             libpandoc-pyodide.mjs
+            libpandoc-wasm-THIRD-PARTY-NOTICES.txt
             SHA256SUMS
       # SHA256SUMS last: while the assets are being replaced, a download
       # checked against it fails rather than passes
@@ -352,5 +355,6 @@ jobs:
           gh release view continuous >/dev/null 2>&1 ||
             gh release create continuous --prerelease --title continuous \
               --notes "Latest build of main. Replaced on every push. Verify a download: README.md, \"Verifying a download\"."
-          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs --clobber
+          gh release upload continuous libpandoc-*.tar.gz libpandoc.wasm libpandoc-pyodide.mjs \
+            libpandoc-wasm-THIRD-PARTY-NOTICES.txt --clobber
           gh release upload continuous SHA256SUMS --clobber
