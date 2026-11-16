@@ -64,15 +64,22 @@ static size_t upto(rng *r, size_t max)
 
 typedef struct { char *p; size_t n, cap; } buf;
 
+/* under the runner's memory cap, the fuzzer's own allocations fail too:
+ * counted as running out of memory */
+static void *need(void *p)
+{
+    if (!p) {
+        fputs("fuzz: out of memory\n", stderr);
+        _exit(251);
+    }
+    return p;
+}
+
 static void grow(buf *b, size_t n)
 {
     if (b->n + n + 1 <= b->cap) return;
     b->cap = (b->n + n + 1) * 2;
-    if (!(b->p = realloc(b->p, b->cap))) {
-        /* under the runner's memory cap: counted as running out of memory */
-        fputs("fuzz: out of memory\n", stderr);
-        _exit(251);
-    }
+    b->p = need(realloc(b->p, b->cap));
 }
 static void bput(buf *b, const void *s, size_t n)
 {
@@ -153,7 +160,7 @@ static int json_str(const char *s, size_t n, size_t *i)
 }
 static int json_ok(const char *s, size_t n)
 {
-    char *st = malloc(n + 1);
+    char *st = need(malloc(n + 1));
     size_t d = 0, i = 0;
     int ok = 0;
 #define WS while (i < n && strchr(" \t\r\n", s[i]) && s[i]) i++
@@ -664,7 +671,7 @@ static void mutate(rng *r, buf *b, const bytes *s)
         case 4: { /* repeat a piece */
             size_t times = upto(r, 2000);
             len = len > 64 ? 64 : len;
-            char *piece = strndup(b->p + at, len);
+            char *piece = need(strndup(b->p + at, len));
             buf t = {0};
             for (size_t i = 0; i < times && len; i++) bput(&t, piece, len);
             grow(b, t.n);
@@ -967,8 +974,8 @@ static void do_args(rng *r, int main)
     char *argv[16];
     int argc = 0;
     buf t = {0};
-    if (main) argv[argc++] = strdup(chance(r, 95) ? "pandoc" : "pandoc-lua");
-    if (main && chance(r, 5)) argv[argc++] = strdup(chance(r, 70) ? "lua" : "server");
+    if (main) argv[argc++] = need(strdup(chance(r, 95) ? "pandoc" : "pandoc-lua"));
+    if (main && chance(r, 5)) argv[argc++] = need(strdup(chance(r, 70) ? "lua" : "server"));
     for (size_t k = below(r, 8); k && argc < 14; k--) {
         t.n = 0;
         switch (below(r, 10)) {
@@ -992,7 +999,7 @@ static void do_args(rng *r, int main)
         case 8: bfmt(&t, "--lua-filter=%s/lua/%s", root, PICK(r, ((const char *[]){"id.lua", "err.lua", "bad.lua", "big.lua"}))); break;
         default: bfmt(&t, "--lua-filter=libpandoc:callback/%d", (int)below(r, 3)); break;
         }
-        argv[argc++] = strdup(bget(&t));
+        argv[argc++] = need(strdup(bget(&t)));
     }
     argv[argc] = NULL;
     buf doc = {0};
