@@ -306,7 +306,13 @@ withHooks cs filters n opts engine = engine { engineApplyFilter = apply }
     apply env args path doc
       | Just i <- stripPrefix callbackPrefix path
       , [(k, "")] <- reads i, k >= 0, k < n, filters /= nullPtr = do
-          r <- liftIO $ withCancelScope cs $ runCallback filters k opts env args doc
+          r <- liftIO $ do
+            r <- withCancelScope cs $ runCallback filters k opts env args doc
+            -- (cancelled while the callback ran: fail now, not if the
+            -- watcher's exception happens to arrive before the end)
+            stop <- isCancelled cs
+            when stop $ throwIO Cancelled
+            pure r
           either (throwError . PandocFilterError (T.pack ("callback " ++ show k)))
                  pure r
       | Just f <- stripPrefix jsonPrefix path = do
