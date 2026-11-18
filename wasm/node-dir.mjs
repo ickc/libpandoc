@@ -1,10 +1,12 @@
 // A directory of the disk, read-only, as a WASI preopen for
 // @bjorn3/browser_wasi_shim in Node: what wasm-filter.mjs gives a wasm
-// filter by default there (the working directory), as the other hosts
-// (wasmtime) give it. Files are read whole when opened.
+// filter there for each directory of $LIBPANDOC_WASM_DIRS (by default
+// none), as the other hosts (wasmtime) give them. Files are read whole
+// when opened.
 //
-//   import { nodeDirectory } from "./node-dir.mjs";
-//   const f = await wasmFilter(bytes, { preopens: [nodeDirectory(".", ".")] });
+//   import { hostPreopens, nodeDirectory } from "./node-dir.mjs";
+//   const f = await wasmFilter(bytes, { preopens: hostPreopens(["../common", "."]) });
+//   const g = await wasmFilter(bytes, { preopens: [nodeDirectory("data", "/data")] });
 //
 // Nothing outside the directory is reached: a path leaving it through ".."
 // or a symbolic link (followed, then checked against the directory's real
@@ -122,4 +124,47 @@ class NodeDirectory extends Fd {
 export function nodeDirectory(path, name = path) {
   const root = realpathSync(path);
   return new NodeDirectory(root, root, name);
+}
+
+/** The host's directories `dirs` (relative ones to `cwd`), read-only, as
+ *  the preopens a wasm filter sees them by: each under its absolute path
+ *  (the real one too, if a link leads to it; on Windows C:\x as /c/x) and
+ *  under its path relative to `cwd` (".", "..", "../common", "img"; none
+ *  on another Windows drive); and `cwd` as "." when it lies inside one of
+ *  them. wasi-libc matches the beginning of a path against these names as
+ *  written, without normalising: ../common/x and here.txt work,
+ *  ./../common/x and img/../../common/x don't. Throws, naming it, for one
+ *  that doesn't exist or isn't a directory. */
+export function hostPreopens(dirs, cwd = process.cwd()) {
+  const realCwd = realpathSync(cwd);
+  const named = new Map();
+  const add = (name, real) => {
+    if (name !== null && !named.has(name)) named.set(name, new NodeDirectory(real, real, name));
+  };
+  for (const dir of dirs) {
+    const abs = resolve(cwd, dir);
+    let st;
+    try {
+      st = statSync(abs);
+    } catch (e) {
+      throw new Error(e.code === "ENOENT" || e.code === "ENOTDIR" ? `${dir} does not exist` : `${dir}: ${e.message}`);
+    }
+    if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
+    const real = realpathSync(abs);
+    add(wasiPath(abs), real);
+    add(wasiPath(real), real);
+    const r = relative(realCwd, real);
+    if (!isAbsolute(r)) add(r === "" ? "." : r.split(sep).join("/"), real);
+    const back = relative(real, realCwd);
+    if (back !== "" && !isAbsolute(back) && back.split(sep)[0] !== "..") add(".", realCwd);
+  }
+  return [...named.values()];
+}
+
+/** An absolute path as a WASI one: itself, or on Windows C:\x as /c/x
+ *  (the bindings' convention), null for other Windows paths (UNC). */
+function wasiPath(p) {
+  if (sep === "/") return p;
+  const m = /^([A-Za-z]):\\(.*)$/.exec(p);
+  return m ? `/${m[1].toLowerCase()}/${m[2].split("\\").join("/")}`.replace(/\/$/, "") : null;
 }

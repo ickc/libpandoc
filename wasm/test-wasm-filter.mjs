@@ -5,10 +5,11 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { File, PreopenDirectory } from "@bjorn3/browser_wasi_shim";
 import { load, PandocError } from "./node.mjs";
+import { hostPreopens } from "./node-dir.mjs";
 import { parseMemory, wasmFilter } from "./wasm-filter.mjs";
 
 const path = process.env.LIBPANDOC_WASM ?? new URL("../dist/wasm/libpandoc.wasm", import.meta.url).pathname;
@@ -115,29 +116,61 @@ test("a filter calling pandoc: by default, the pandoc it runs in", async () => {
   assert.throws(() => parse(new TextEncoder().encode("{}"), ctx), /calls pandoc/);
 });
 
-test("in Node, the working directory, read-only, by default; nothing outside it (H7)", async () => {
-  const top = mkdtempSync(join(tmpdir(), "wasm-filter-cwd-"));
+// A tree for the directory tests, the working directory its work/:
+//   top/{outside.txt, common/part.txt, work/{part.txt, sub/deep.txt, links}}
+// and the variable LIBPANDOC_WASM_DIRS as given (undefined: unset), both
+// restored after.
+async function inTree(dirs, body) {
+  const top = mkdtempSync(join(tmpdir(), "wasm-filter-dirs-"));
   const work = join(top, "work");
   mkdirSync(join(work, "sub"), { recursive: true });
+  mkdirSync(join(top, "common"));
   writeFileSync(join(work, "part.txt"), "included");
   writeFileSync(join(work, "sub", "deep.txt"), "deeper");
+  writeFileSync(join(top, "common", "part.txt"), "common");
   writeFileSync(join(top, "outside.txt"), "OUTSIDE");
   symlinkSync(join(top, "outside.txt"), join(work, "link.txt"));
   symlinkSync(top, join(work, "linkdir"));
   symlinkSync(join(work, "part.txt"), join(work, "inner-link.txt"));
-  const include = await filter("include", { stderr: () => {} });
-  const run = (name) => pandoc.convertWithFilters({ from: "markdown", to: "plain" },
-                                                  "```include\n" + name + "\n```\n", [include]).trim();
-  const before = process.cwd();
+  const before = process.cwd(), saved = process.env.LIBPANDOC_WASM_DIRS;
+  if (dirs === undefined) delete process.env.LIBPANDOC_WASM_DIRS;
+  else process.env.LIBPANDOC_WASM_DIRS = typeof dirs === "function" ? dirs(top) : dirs;
   process.chdir(work);
   try {
+    // (the variable is read when the filter is made)
+    const include = await filter("include", { stderr: () => {} });
+    const run = (name) => pandoc.convertWithFilters({ from: "markdown", to: "plain" },
+                                                    "```include\n" + name + "\n```\n", [include]).trim();
+    await body({ top, work, run });
+  } finally {
+    process.chdir(before);
+    if (saved === undefined) delete process.env.LIBPANDOC_WASM_DIRS;
+    else process.env.LIBPANDOC_WASM_DIRS = saved;
+    rmSync(top, { recursive: true, force: true });
+  }
+}
+const missing = (run, name, hint = false) =>
+  assert.throws(() => run(name), (e) => e instanceof PandocError && /exited with status 3/.test(e.message)
+                && /given no directory/.test(e.message) === hint, name);
+
+test("in Node, by default, no directory: an include fails, saying so", async () => {
+  await inTree(undefined, ({ run }) => {
+    assert.throws(() => run("part.txt"), (e) => e instanceof PandocError
+      && /exited with status 3 \(it was given no directory: LIBPANDOC_WASM_DIRS\)$/.test(e.message));
+  });
+  await inTree("", ({ run }) => missing(run, "part.txt", true));
+});
+
+test("LIBPANDOC_WASM_DIRS: the working directory, read-only; nothing outside it", async () => {
+  await inTree((top) => join(top, "work"), async ({ top, work, run }) => {
     assert.equal(run("part.txt"), "included");
+    assert.equal(run("./part.txt"), "included");
     assert.equal(run("sub/deep.txt"), "deeper");
     assert.equal(run("sub/../part.txt"), "included");
+    assert.equal(run(join(work, "part.txt")), "included");
     assert.equal(run("inner-link.txt"), "included"); // a link inside it
-    for (const out of ["../outside.txt", join(top, "outside.txt"), "link.txt", "linkdir/outside.txt", "nonesuch"]) {
-      assert.throws(() => run(out), (e) => e instanceof PandocError && /exited with status 3/.test(e.message), out);
-    }
+    for (const out of ["../outside.txt", join(top, "outside.txt"), "../common/part.txt", "link.txt",
+                       "linkdir/outside.txt", "nonesuch"]) missing(run, out);
     // read-only: nothing written, not a new file, not over one
     const writer = await filter("misbehave", { stderr: () => {} });
     for (const name of ["new.txt", "part.txt"]) {
@@ -147,10 +180,60 @@ test("in Node, the working directory, read-only, by default; nothing outside it 
     }
     assert.equal(readFileSync(join(work, "part.txt"), "utf8"), "included");
     assert.throws(() => readFileSync(join(work, "new.txt")));
-  } finally {
-    process.chdir(before);
-    rmSync(top, { recursive: true, force: true });
-  }
+  });
+  await inTree(".", ({ run }) => assert.equal(run("part.txt"), "included"));
+});
+
+test("LIBPANDOC_WASM_DIRS: the parent, reached through .. as natively; not normalised", async () => {
+  await inTree((top) => top, ({ top, run }) => {
+    assert.equal(run("../common/part.txt"), "common");
+    assert.equal(run(join(top, "common", "part.txt")), "common");
+    assert.equal(run("../outside.txt"), "OUTSIDE");
+    assert.equal(run("part.txt"), "included"); // the working directory inside it, as .
+    assert.equal(run("../work/part.txt"), "included");
+    // wasi-libc matches names as written: these match "." (the working
+    // directory), which they would leave
+    missing(run, "./../common/part.txt");
+    missing(run, "sub/../../common/part.txt");
+  });
+});
+
+test("LIBPANDOC_WASM_DIRS: a sibling, and a list", async () => {
+  await inTree("../common", ({ top, run }) => {
+    assert.equal(run("../common/part.txt"), "common");
+    assert.equal(run(join(top, "common", "part.txt")), "common");
+    missing(run, "part.txt");
+    missing(run, "../outside.txt");
+    missing(run, "../common/../outside.txt");
+  });
+  await inTree(["../common", "."].join(delimiter), ({ run }) => {
+    assert.equal(run("../common/part.txt"), "common");
+    assert.equal(run("part.txt"), "included");
+  });
+});
+
+test("LIBPANDOC_WASM_DIRS: a missing directory, or a file, is an error naming it", async () => {
+  await inTree((top) => [join(top, "work"), join(top, "nonesuch")].join(delimiter), ({ top, run }) => {
+    assert.throws(() => run("part.txt"), (e) => e instanceof PandocError
+      && e.message.includes(`include.wasm: LIBPANDOC_WASM_DIRS: ${join(top, "nonesuch")} does not exist`));
+  });
+  await inTree("part.txt", ({ run }) => {
+    assert.throws(() => run("part.txt"), /LIBPANDOC_WASM_DIRS: part.txt is not a directory/);
+  });
+});
+
+test("preopens given, also [], replace LIBPANDOC_WASM_DIRS", async () => {
+  await inTree(".", async ({ run }) => {
+    assert.equal(run("part.txt"), "included");
+    const blind = await filter("include", { preopens: [], stderr: () => {} });
+    assert.throws(() => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "```include\npart.txt\n```\n", [blind]),
+                  (e) => e instanceof PandocError && /exited with status 3 \(it was given no directory\)$/.test(e.message));
+    const sub = await filter("include", { preopens: hostPreopens(["sub"]), stderr: () => {} });
+    const runSub = (name) => pandoc.convertWithFilters({ from: "markdown", to: "plain" },
+                                                       "```include\n" + name + "\n```\n", [sub]).trim();
+    assert.equal(runSub("sub/deep.txt"), "deeper");
+    missing(runSub, "part.txt");
+  });
 });
 
 test("a filter's calls are sandboxed (LaTeX's \\input reads no file)", async () => {
