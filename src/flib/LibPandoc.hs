@@ -48,7 +48,7 @@ import Control.Concurrent (forkFinally, forkIOWithUnmask, killThread, mkWeakThre
 import Data.Unique (Unique, newUnique)
 import GHC.Clock (getMonotonicTime)
 import System.Mem.Weak (deRefWeak)
-import Control.Monad (forM_, unless, when, (<=<))
+import Control.Monad (foldM, forM_, unless, when, (<=<))
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.MVar (MVar, isEmptyMVar, newEmptyMVar, newMVar, putMVar, readMVar,
                                 takeMVar, tryPutMVar, withMVar)
@@ -58,6 +58,7 @@ import Control.Monad.Except (catchError, throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson ((.=))
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson (parseEither)
 import qualified Data.ByteString as B
@@ -94,9 +95,11 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Text.Pandoc.Data (readDataFile)
 import Text.Pandoc.Citeproc (processCitations)
-import Text.Pandoc.Class (PandocIO, PandocMonad, findFileWithDataFallback,
-                          getLog, readFileStrict, runIO, runIOorExplode, runPure,
-                          sandbox, setResourcePath, setUserDataDir, setVerbosity)
+import Text.Pandoc.Class (FileInfo (..), PandocIO, PandocMonad, addToFileTree,
+                          findFileWithDataFallback, getCurrentTime, getLog,
+                          insertInFileTree, readFileStrict, runIO, runIOorExplode,
+                          runPure, sandbox, sandboxWithFileTree, setResourcePath,
+                          setUserDataDir, setVerbosity)
 import Text.Pandoc.Options (ReaderOptions (..), def)
 import Text.Pandoc.Readers (Reader (..), getReader)
 import Text.Pandoc.Shared (tabFilter)
@@ -181,24 +184,26 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   let parsed = do
         v0 <- Aeson.eitherDecodeStrict json
         (limit, v1) <- timeLimit v0
+        (isUntrusted, v2) <- untrusted Convert v1
         -- untrusted code doesn't read the process's stdin
-        when (isUntrusted v1 && isNothing input) $
+        when (isUntrusted && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
-        -- (after untrusted, which refuses a cancel token)
-        (token, v) <- cancelToken =<< untrusted Convert v1
-        v' <- callbackFilters (fromIntegral nFilters) v
-        (,,,) limit token (isUntrusted v1) <$> Aeson.parseEither Aeson.parseJSON v'
+        -- (after untrusted, which refuses the code's own cancel token and
+        -- adds the host's)
+        (token, v3) <- cancelToken v2
+        (given, v4) <- citeprocFiles v3
+        v5 <- callbackFilters (fromIntegral nFilters) v4
+        f <- Aeson.parseEither Aeson.parseJSON v5
+        let opts = f defaultOpts
+        when (isJust given && not (optSandbox opts)) $
+          Left "\"citeproc-files\" needs pandoc's sandbox (\"sandbox\": true, or \"untrusted\"): without it citeproc reads the files from the disk"
+        pure (limit, token, isUntrusted, fromMaybe [] given, opts)
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (limit, token, noUserData, f :: Opt -> Opt) -> do
+    Right (limit, token, noUserData, given, opts) -> do
       cs <- cancelScope token
       limited limit $ cancellable cs $
-        convert (withHooks cs filters (fromIntegral nFilters)) noUserData (f defaultOpts) input
-
--- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
-isUntrusted :: Aeson.Value -> Bool
-isUntrusted (Aeson.Object o) = KM.lookup "untrusted" o == Just (Aeson.Bool True)
-isUntrusted _ = False
+        convert (withHooks cs given filters (fromIntegral nFilters)) noUserData opts input
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -253,7 +258,10 @@ routeFilters opts
     route f = f
 
 -- | Citeproc as pandoc runs it, but inside pandoc's pure sandbox, with only
--- the files the caller named in the options: pandoc's @--sandbox@ runs the
+-- the files the caller named in the options, and those given as their
+-- contents (@citeproc-files@: 'citeprocFiles'; these win over a file of the
+-- same name the options name, which is read from the disk all the same, by
+-- pandoc for its own sandbox too): pandoc's @--sandbox@ runs the
 -- reader and the writer so, but not citeproc (jgm/pandoc's App.hs), which
 -- would otherwise read, or fetch, whatever bibliography, CSL style or
 -- abbreviations a document names (in its metadata, or with LaTeX's
@@ -263,9 +271,15 @@ routeFilters opts
 -- looked in (pandoc's own are). The list is the citeproc part of what
 -- pandoc's sandbox gives its reader and writer (@sandbox'@ in
 -- Text.Pandoc.App.OutputSettings), so not a @bibliography@ given as
--- metadata (@-M@, a metadata file), as there.
-citeprocSandboxed :: (PandocMonad m, MonadIO m) => Opt -> Pandoc -> m Pandoc
-citeprocSandboxed opts = sandbox files . processCitations
+-- metadata (@-M@, a metadata file), as there. As pandoc's 'sandbox', which
+-- takes only files to read.
+citeprocSandboxed :: (PandocMonad m, MonadIO m)
+                  => Opt -> [(FilePath, B.ByteString)] -> Pandoc -> m Pandoc
+citeprocSandboxed opts given doc = do
+  fromDisk <- liftIO $ foldM addToFileTree mempty files
+  now <- getCurrentTime
+  let tree = foldr (\(name, text) -> insertInFileTree name (FileInfo now text)) fromDisk given
+  sandboxWithFileTree tree (processCitations doc)
   where
     files = maybeToList (optCSL opts) ++ maybeToList (optCitationAbbreviations opts)
               ++ optBibliography opts
@@ -297,9 +311,10 @@ withoutCitations opts = case writerFormat of
 
 -- | The engine, answering the reserved paths: callback filters by calling
 -- them (calls they make inherit the cancel tokens @cs@), JSON filters by
--- running them, citeproc in the sandbox.
-withHooks :: [MVar ()] -> Ptr () -> Int -> Opt -> ScriptingEngine -> ScriptingEngine
-withHooks cs filters n opts engine = engine { engineApplyFilter = apply }
+-- running them, citeproc in the sandbox (with the files @given@).
+withHooks :: [MVar ()] -> [(FilePath, B.ByteString)] -> Ptr () -> Int -> Opt
+          -> ScriptingEngine -> ScriptingEngine
+withHooks cs given filters n opts engine = engine { engineApplyFilter = apply }
   where
     apply :: (PandocMonad m, MonadIO m)
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
@@ -319,7 +334,7 @@ withHooks cs filters n opts engine = engine { engineApplyFilter = apply }
           -- as pandoc's expandFilterPath does for JSON filters
           f' <- fromMaybe f <$> findFileWithDataFallback "filters" f
           liftIO (runJSONFilter opts env args f' doc) >>= either throwError pure
-      | path == citeprocPath = citeprocSandboxed opts doc
+      | path == citeprocPath = citeprocSandboxed opts given doc
       | otherwise = engineApplyFilter engine env args path doc
 
 -- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
@@ -424,7 +439,7 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   cs <- cancelScope Nothing
   case parsed of
     Right opts -> cancellable cs $
-      convert (withHooks cs filters (fromIntegral nFilters)) False opts input
+      convert (withHooks cs [] filters (fromIntegral nFilters)) False opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -439,7 +454,7 @@ hsReadMany ptr len = respond $ do
         (optsV, o) <- flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o ->
           (\opts -> (fromMaybe (Aeson.object []) opts, o)) <$> o Aeson..:? "options"
         (limit, optsV1) <- timeLimit optsV
-        (token, optsV') <- cancelToken =<< untrusted ReadMany optsV1
+        (token, optsV') <- cancelToken . snd =<< untrusted ReadMany optsV1
         flip Aeson.parseEither optsV' $ \_ -> do
           f <- Aeson.parseJSON optsV'
           inputs <- o Aeson..: "inputs"
@@ -744,7 +759,7 @@ hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
               -- (a call from a callback filter: cancelled with its conversion)
               cs <- cancelScope Nothing
               whileNotCancelled cs $
-                convertWithOpts (withHooks cs filters (fromIntegral nFilters) opts engine)
+                convertWithOpts (withHooks cs [] filters (fromIntegral nFilters) opts engine)
                                 (routeFilters opts)
     -- pandoc-cli's, for what pandoc_main does: no server, pandoc lua but
     -- in the wasm build
@@ -1066,6 +1081,24 @@ cancelToken (Aeson.Object o) = case KM.lookup "cancel-token" o of
   Just v -> Left ("\"cancel-token\" is a token from pandoc_cancel_token_new, not "
                   <> UTF8.toStringLazy (Aeson.encode v))
 cancelToken v = Right (Nothing, v)
+
+-- | libpandoc's option @"citeproc-files"@ (@pandoc_convert@): files for
+-- citeproc given as their contents, @{"name": "text"}@, which
+-- 'citeprocSandboxed' puts among the files it may read; and the options
+-- without it. Nothing is read from the disk for them, and no name is
+-- checked: they are text in memory.
+citeprocFiles :: Aeson.Value -> Either String (Maybe [(FilePath, B.ByteString)], Aeson.Value)
+citeprocFiles (Aeson.Object o) = case KM.lookup "citeproc-files" o of
+  Nothing -> Right (Nothing, Aeson.Object o)
+  Just (Aeson.Object fs) -> do
+    given <- traverse file (KM.toList fs)
+    Right (Just given, Aeson.Object (KM.delete "citeproc-files" o))
+  Just v -> Left ("\"citeproc-files\" is an object of file names and their text, not "
+                  <> UTF8.toStringLazy (Aeson.encode v))
+  where
+    file (k, Aeson.String text) = Right (T.unpack (K.toText k), TE.encodeUtf8 text)
+    file (k, _) = Left ("\"citeproc-files\": the contents of " <> show (K.toText k) <> " are not text")
+citeprocFiles v = Right (Nothing, v)
 
 -- | The tokens a call stops for: its own, and those of the calls it runs
 -- inside (it was made by a callback filter of theirs, on its thread). An

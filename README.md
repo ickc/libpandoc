@@ -70,7 +70,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.13 now; the embedded pandoc's version and its
+are this C interface's own, 1.14 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -106,8 +106,18 @@ honoured, by design: the environment is the host's own configuration, not
 something untrusted options choose (the header says what is read from it);
 a host that wants none of it doesn't set it. `citeproc` is
 allowed (1.8), sandboxed as below, with the references in the document's
-metadata. Wasm filters' calls to pandoc are always untrusted. The list is
+metadata, or files given as their contents (`"citeproc-files"`, 1.14:
+below). Wasm filters' calls to pandoc are always untrusted. The list is
 `src/LibPandoc/Untrusted.hs`.
+
+The host writes `"untrusted"` itself, over whatever the code wrote, so
+its value is the host's. It may be an object (1.14) of what the host adds
+to the code's options: `"untrusted": {"cancel-token": N}` gives the host's
+cancel token (below), which a top-level `"cancel-token"` can't (the code
+could have written it: refused). `{}` is the same as `true`. Any other
+field, and any value but `true`, `false` or an object, is an error,
+in `pandoc_query` too (1.14; before, a query took such a value for
+trusted): nothing but `false` or no key is trusted.
 
 `"untrusted"` limits what the options may do, not how long or how much
 memory pandoc takes over a document: a few kilobytes of markdown can keep
@@ -152,6 +162,25 @@ fetched. So a bibliography given as metadata (`-M`, a metadata file, a
 filter) isn't read either, nor the data directory's `csl/`; name them
 in those options.
 
+Or give them as their contents (1.14): `"citeproc-files": {"refs.bib":
+"@book{...}", "style.csl": "<style ...>"}`, for a caller that reads the
+files itself (a wasm filter running citeproc: its calls to pandoc read no
+file). citeproc finds each as a file of that name, the name the
+document's metadata (or a trusted caller's options) gives, compared as
+pandoc's sandbox does (`refs.bib` serves `./refs.bib` too); nothing is
+read from the disk for them, and a name not given is missing as before,
+also when such a file exists. pandoc's own lookups decide the name: `csl:
+style` looks up `style.csl`, `citation-abbreviations: abbr` looks up
+`abbr.json`, LaTeX's `\bibliography{refs}` looks up `refs.bib`, a
+dependent style's parent `apa.csl` for `.../styles/apa`. It needs the
+sandbox (`"sandbox": true` or `"untrusted"`; else an option error, as
+citeproc would read the disk instead), and untrusted options may give it,
+while their `bibliography`, `csl` and `citation-abbreviations` stay
+refused. A trusted caller's files named in those options are still read
+from the disk, given contents of the same name winning. Not in
+`pandoc_read_many` (an option error). URLs and the data directory's
+`csl/` still find nothing. The header has the rules.
+
 In libpandoc.wasm under a host that opens only some directories to it
 (the bindings' directory sandbox), a path leaving them through `..` or a
 symbolic link fails with "permission denied" where a missing file fails
@@ -173,7 +202,10 @@ terminated, the library usable), `pandoc_read_many` as a whole. A token
 stays cancelled (a cancel just before the call starts isn't lost), serves
 any number of calls until then, and is freed with
 `pandoc_cancel_token_free`; a number that is no token is an option error,
-and cancelling or freeing it does nothing. Calls a callback filter makes
+and cancelling or freeing it does nothing. Untrusted options can't name a
+token (libpandoc can't tell the host's number from the code's); the host
+gives its own inside `"untrusted"`, which it writes itself:
+`"untrusted": {"cancel-token": N}` (1.14). Calls a callback filter makes
 on its thread are cancelled with its conversion. The limits are
 `"timeout"`'s: not a callback (it runs to its end, then the call fails),
 not Lua, not a loop of pandoc's that doesn't allocate. These functions
@@ -260,7 +292,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.13 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.14 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the

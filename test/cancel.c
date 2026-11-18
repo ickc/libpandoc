@@ -3,7 +3,8 @@
  * leaves nothing behind (temporary files, descriptors, a JSON filter's
  * process); the library goes on. Before, during and after a call; many
  * calls at once with one cancelled; a callback filter running when it
- * happens, and the calls it makes; read_many.
+ * happens, and the calls it makes; read_many. And (1.14) the host's token
+ * given inside "untrusted": {"cancel-token": N}.
  *
  *   cc test/cancel.c -Idist/include -Ldist/lib -lpandoc -pthread && ./a.out
  *
@@ -118,6 +119,16 @@ static char *with_token(const char *extra, int64_t token)
 {
     char *o = malloc(512);
     snprintf(o, 512, "{%s%s\"cancel-token\": %lld}", extra, *extra ? ", " : "", (long long)token);
+    return o;
+}
+
+/* untrusted options with the host's token (1.14):
+ * "{...extra, "untrusted": {"cancel-token": N}}" */
+static char *with_host_token(const char *extra, int64_t token)
+{
+    char *o = malloc(512);
+    snprintf(o, 512, "{%s%s\"untrusted\": {\"cancel-token\": %lld}}", extra, *extra ? ", " : "",
+             (long long)token);
     return o;
 }
 
@@ -316,6 +327,55 @@ int main(void)
         check(r && r->status == 0 && has(r->output, "Emph"), "read_many takes a token too");
         pandoc_result_free(r);
         free(o);
+
+        /* the host's token inside "untrusted" (1.14) */
+        o = with_host_token("\"to\": \"html\"", u);
+        r = pandoc_convert(o, strlen(o), "*x*", 3);
+        check(ok_html(r, "<p><em>x</em></p>\n"), "\"untrusted\": {\"cancel-token\": N} converts");
+        pandoc_result_free(r);
+        free(o);
+        o = malloc(256);
+        snprintf(o, 256, "{\"untrusted\": {\"cancel-token\": %lld}, \"cancel-token\": %lld}",
+                 (long long)u, (long long)u);
+        r = pandoc_convert(o, strlen(o), "x", 1);
+        check(kind(r, "PandocOptionError") && has(r->error_message, "not allowed for untrusted code: cancel-token"),
+              "... beside a top-level \"cancel-token\": refused, as with \"untrusted\": true");
+        pandoc_result_free(r);
+        snprintf(o, 256, "{\"untrusted\": {}, \"cancel-token\": %lld}", (long long)u);
+        r = pandoc_convert(o, strlen(o), "x", 1);
+        check(kind(r, "PandocOptionError") && has(r->error_message, "not allowed for untrusted code: cancel-token"),
+              "... a top-level one beside \"untrusted\": {}: refused");
+        pandoc_result_free(r);
+        snprintf(o, 256, "{\"untrusted\": {\"cancel-token\": %lld, \"timeout\": 5}}", (long long)u);
+        r = pandoc_convert(o, strlen(o), "x", 1);
+        check(kind(r, "PandocOptionError") && has(r->error_message, "unknown field \"timeout\""),
+              "... another field in \"untrusted\": an error naming it");
+        pandoc_result_free(r);
+        all = 1;
+        for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+            snprintf(o, 256, "{\"untrusted\": %s}", bad[i]);
+            r = pandoc_convert(o, strlen(o), "x", 1);
+            all = all && kind(r, "PandocOptionError") && has(r->error_message, "cancel-token");
+            pandoc_result_free(r);
+        }
+        check(all, "... a \"cancel-token\" there that isn't a token's number: a PandocOptionError");
+        snprintf(o, 256, "{\"query\": \"version\", \"untrusted\": {\"cancel-token\": %lld}}", (long long)u);
+        r = pandoc_query(o, strlen(o));
+        check(kind(r, "PandocOptionError") && has(r->error_message, "cancel-token"),
+              "... in a query: a PandocOptionError (queries take no token)");
+        pandoc_result_free(r);
+        snprintf(o, 256, "{\"options\": {\"untrusted\": {\"cancel-token\": %lld}}, \"inputs\": [\"*a*\"]}",
+                 (long long)u);
+        r = pandoc_read_many(o, strlen(o));
+        check(r && r->status == 0 && has(r->output, "Emph"), "... read_many takes it too");
+        pandoc_result_free(r);
+        free(o);
+        o = with_host_token("", c);
+        r = pandoc_convert(o, strlen(o), "x", 1);
+        check(kind(r, "PandocOptionError") && has(r->error_message, "no token"),
+              "... a freed token there: a PandocOptionError");
+        pandoc_result_free(r);
+        free(o);
         pandoc_cancel_token_free(u);
     }
 
@@ -334,6 +394,11 @@ int main(void)
         check(cancelled(r), "... and stays cancelled");
         pandoc_result_free(r);
         free(o);
+        o = with_host_token(MD, t);
+        r = pandoc_convert(o, strlen(o), slow, slow_len);
+        check(cancelled(r), "... the host's token inside \"untrusted\" too");
+        pandoc_result_free(r);
+        free(o);
         pandoc_cancel_token_free(t);
     }
 
@@ -345,6 +410,23 @@ int main(void)
     r = pandoc_convert("{\"to\": \"html\"}", 14, "*x*", 3);
     check(ok_html(r, "<p><em>x</em></p>\n"), "... and the next call works");
     pandoc_result_free(r);
+    /* untrusted, the host's token inside "untrusted" (1.14) */
+    {
+        int64_t t = pandoc_cancel_token_new();
+        o = with_host_token(MD, t);
+        job j = {o, slow, slow_len, NULL, 0, NULL, 0};
+        thread th = spawn(run_job, &j);
+        pause_ms(300);
+        double c = now();
+        pandoc_cancel(t);
+        join(th);
+        secs = j.ended - c;
+        check(cancelled(j.r) && secs < 2, "during, untrusted, the token inside \"untrusted\": \"Cancelled\"");
+        show(j.r, secs);
+        pandoc_result_free(j.r);
+        free(o);
+        pandoc_cancel_token_free(t);
+    }
     /* with a time limit too: whichever comes first */
     r = cancel_slow(MD ", \"timeout\": 60", 300, &secs);
     check(cancelled(r) && secs < 2, "during, with a later \"timeout\": \"Cancelled\"");
@@ -498,12 +580,14 @@ int main(void)
         pandoc_cancel_token_free(self_token);
     }
 
-    /* read_many: every reader stops, and the call fails as a whole */
-    {
+    /* read_many: every reader stops, and the call fails as a whole; also
+     * untrusted, the host's token inside "untrusted" (1.14) */
+    for (int host = 0; host < 2; host++) {
         size_t n = 8 * (slow_len + 4) + 200;
         char *rq = malloc(n), *p = rq;
         int64_t t = pandoc_cancel_token_new();
-        p += sprintf(p, "{\"options\": {\"from\": \"markdown\", \"cancel-token\": %lld}, \"inputs\": [",
+        p += sprintf(p, host ? "{\"options\": {\"from\": \"markdown\", \"untrusted\": {\"cancel-token\": %lld}}, \"inputs\": ["
+                             : "{\"options\": {\"from\": \"markdown\", \"cancel-token\": %lld}, \"inputs\": [",
                      (long long)t);
         for (int i = 0; i < 8; i++) p += sprintf(p, "%s\"%.*s\"", i ? ", " : "", (int)slow_len, slow);
         strcpy(p, "]}");
@@ -514,7 +598,8 @@ int main(void)
         pandoc_cancel(t);
         join(th);
         secs = j.ended - c;
-        check(cancelled(j.r) && secs < 3, "read_many: cancelled, the whole call fails, soon after");
+        check(cancelled(j.r) && secs < 3, host ? "read_many, the token inside \"untrusted\": cancelled"
+                                               : "read_many: cancelled, the whole call fails, soon after");
         show(j.r, secs);
         pandoc_result_free(j.r);
         r = pandoc_read_many(rq, strlen(rq));

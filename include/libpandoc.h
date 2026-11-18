@@ -49,10 +49,11 @@
  * of meaning (the list at LIBPANDOC_ABI_VERSION).
  *
  * Untrusted input, and three meanings of "sandbox":
- *   - "untrusted": true (libpandoc's option) is about options: from code
- *     the host doesn't trust (a wasm filter calling pandoc), only those
- *     that read, write, fetch and run nothing are accepted (details at
- *     pandoc_convert). It doesn't bound a document's time or memory: for
+ *   - "untrusted": true (libpandoc's option; or an object of what the host
+ *     adds, from 1.14) is about options: from code the host doesn't trust
+ *     (a wasm filter calling pandoc), only those that read, write, fetch
+ *     and run nothing are accepted (details at pandoc_convert). It doesn't
+ *     bound a document's time or memory: for
  *     documents from someone you don't trust, give the conversion a
  *     "timeout" and memory of its own (libpandoc.wasm, a separate process,
  *     a container), with "sandbox" (below) or "untrusted" so that it reads
@@ -129,12 +130,15 @@ extern "C" {
  * "sandbox", PANDOC_SANDBOX, and parse-args's "sandbox";
  * pandoc_cancel_token_new, pandoc_cancel, pandoc_cancel_token_free,
  * "cancel-token" and the error kind "Cancelled"; descriptor 0 is /dev/null
- * after pandoc closed standard input).
+ * after pandoc closed standard input; 1.14: "untrusted" may be an object,
+ * {"cancel-token": N} giving the host's token, and any value of it but
+ * true, false or an object is an error in pandoc_query too (before, a query
+ * took it for trusted); "citeproc-files").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 13
+#define LIBPANDOC_ABI_VERSION_MINOR 14
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -282,6 +286,18 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * out). A host that wants none of it doesn't set PANDOC_DATA_DIRS. A host sets
  * "untrusted": true on whatever such code passes (replacing its own
  * "untrusted"), and the list lives here, the same for every host.
+ * citeproc's files can be given as their contents ("citeproc-files",
+ * below), which reads nothing.
+ *
+ * "untrusted" may also be an object (from 1.14): untrusted, as true, plus
+ * what the host itself adds to the code's options, which the code's own
+ * keys can't say: {"cancel-token": N}, the host's cancel token (as the
+ * option "cancel-token", below; "untrusted": {} is the same as true). The
+ * host writes the whole value, as it writes true, so libpandoc trusts what
+ * is in it; a top-level "cancel-token" stays refused (the code's own). Any
+ * other field is a PandocOptionError naming it, and so is any value of
+ * "untrusted" but true, false or an object: nothing but false (or no key)
+ * is taken for trusted, in every call that takes it.
  * "untrusted" is about options: it sets no time limit. A host sets one
  * itself on such code's calls ("timeout", below: replacing the code's own,
  * or the smaller of the two), e.g. a wasm filter's remaining time, and
@@ -323,7 +339,41 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * name, never one the document names (its metadata, LaTeX's
  * \bibliography), nor one named as metadata ("metadata", metadata files,
  * filters), nor the data directory's styles; any other file or URL is
- * missing, with the message a missing file gets, and nothing is fetched. */
+ * missing, with the message a missing file gets, and nothing is fetched.
+ *
+ * "citeproc-files": {"NAME": "TEXT", ...} (libpandoc's, from 1.14): files
+ * for that sandboxed citeproc, given as their contents, for a caller that
+ * reads them itself (a wasm filter, whose calls to pandoc read no file). It
+ * needs the sandbox ("sandbox": true, or "untrusted"; without it, a
+ * PandocOptionError: pandoc's citeproc would read the disk and ignore
+ * them), and untrusted options may give it. citeproc then finds each as
+ * the file NAME, though nothing is read from the disk for it; a name not
+ * given is missing as above, also when a file of that name exists. TEXT is
+ * a JSON string (the file as UTF-8); any other value, or a "citeproc-files"
+ * that isn't an object, is a PandocOptionError. A trusted caller's
+ * "bibliography", "csl" and "citation-abbreviations" are still read from
+ * the disk; given contents of the same name win. It changes nothing but
+ * citeproc's files (citeproc run as the option "citeproc" or the filter
+ * "citeproc"; not a Lua filter's pandoc.utils.citeproc). NAME is what
+ * citeproc looks up, compared as pandoc's sandbox compares names (after
+ * dropping "." and "dir/.."):
+ *   - a bibliography: the name the metadata gives. "refs.bib" serves
+ *     refs.bib, ./refs.bib and sub/../refs.bib; "sub/refs.bib" and
+ *     "../refs.bib" serve those; an absolute path serves itself (and its
+ *     file: URL). Each of a list is looked up alone. LaTeX's
+ *     \bibliography{refs} and \addbibresource{refs.bib} look up "refs.bib"
+ *     (the reader adds .bib). The format is the name's extension (.bib,
+ *     .json, .yaml, .ris, ...): a name without one fails ("Could not
+ *     determine bibliography format"), as on the disk.
+ *   - "csl" (or "citation-style") and "citation-abbreviations": a name
+ *     without a dot gets ".csl" and ".json": csl: style looks up
+ *     "style.csl" (given as "style", it is missing); csl: style.csl looks
+ *     up "style.csl". A dependent style's parent is looked up as the last
+ *     part of its URL plus ".csl" (.../styles/apa: "apa.csl").
+ * What doesn't work: a URL (nothing is fetched), styles in a data
+ * directory's csl/ (looked up by the data directory's path; an untrusted
+ * call's is a temporary directory of its own), a name pandoc doesn't look up
+ * (above: "style" for csl: style). */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 
@@ -491,8 +541,12 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * for untrusted texts. "untrusted": true, as for pandoc_convert, accepts only
  * the reading options that read no files (not data-dir, resource-path,
  * abbreviations), for untrusted code; the abbreviations are then pandoc's
- * own, or PANDOC_DATA_DIRS's (as for pandoc_convert). Each text is prepared as pandoc prepares its
- * input (tabs expanded unless preserve-tabs, carriage returns dropped).
+ * own, or PANDOC_DATA_DIRS's (as for pandoc_convert). "untrusted" may be
+ * an object there too, {"cancel-token": N} (from 1.14). "citeproc-files"
+ * is pandoc_convert's only (readers run no citeproc): here an unknown
+ * option, and refused for untrusted code, both a PandocOptionError. Each
+ * text is prepared as pandoc prepares its input (tabs expanded unless
+ * preserve-tabs, carriage returns dropped).
  *
  * "timeout" in "options" (from 1.10), as for pandoc_convert, is the whole
  * call's: the readers run in parallel, and the call returns within about
@@ -535,9 +589,12 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         or {"subcommand": "lua"} (or
  *                                         "server"), whose arguments aren't
  *                                         pandoc's options
- * The answer is JSON, in result->output. With "untrusted": true, as for
- * pandoc_convert, only those that read nothing of the user's: not
- * default-template nor parse-args. */
+ * The answer is JSON, in result->output. With "untrusted": true (or an
+ * object: from 1.14, which can't hold a "cancel-token" here, a
+ * PandocOptionError), as for pandoc_convert, only those that read nothing
+ * of the user's: not default-template nor parse-args. Any other value of
+ * "untrusted" but false is a PandocOptionError (from 1.14; before, the
+ * query was answered as trusted). */
 LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
 
 /* Cancelling a call (from 1.13): for a binding to stop a long conversion
@@ -550,9 +607,12 @@ LIBPANDOC_API pandoc_result *pandoc_query(const char *query, size_t query_len);
  * (and pandoc_convert_filters's) options and in pandoc_read_many's
  * "options"; a number that is no token (freed, never made) is a
  * PandocOptionError, so a call that couldn't be cancelled doesn't start.
- * "untrusted" options can't name one (a PandocOptionError): a host's own
- * calls do, and the calls such code makes from inside a callback inherit
- * them (below).
+ * "untrusted" options can't name one (a PandocOptionError): libpandoc
+ * can't tell the host's number from one the code wrote. The host gives
+ * its own token inside "untrusted" instead, which it writes itself:
+ * "untrusted": {"cancel-token": N} (from 1.14; the same rules and errors).
+ * And the calls such code makes from inside a callback inherit the
+ * conversion's tokens (below).
  *
  * pandoc_cancel(token) cancels it: every call using it, running or to come,
  * stops and fails with the error kind "Cancelled" (and a message saying
