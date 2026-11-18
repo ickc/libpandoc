@@ -554,3 +554,45 @@ test("a document reaches only the directories given: not through .., nor by an a
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test("panclude: inside its roots only, also past a link to a directory outside (1.15)", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "libpandoc-wasm-test-"));
+  try {
+    writeFileSync(join(outside, "canary.txt"), "CANARY");
+    mkdirSync(join(outside, "work"));
+    mkdirSync(join(outside, "work", "shared"));
+    writeFileSync(join(outside, "work", "in.txt"), "INSIDE");
+    writeFileSync(join(outside, "work", "shared", "s.txt"), "SHARED");
+    // (node:wasi follows a link to a directory wherever it points: README)
+    symlinkSync(outside, join(outside, "work", "up"));
+    const p = await load(pandoc.module, { preopens: { "/work": join(outside, "work") } });
+    p.chdir("/work");
+    const doc = ["in.txt", "shared/s.txt", "up/canary.txt", "../canary.txt"]
+      .map((f) => `\`\`\`{include="${f}"}\n\`\`\`\n`).join("\n");
+    const run = (options) => {
+      const [status, out, , message, log] = p.abi.convert(JSON.stringify({ to: "plain", ...options }), doc);
+      assert.equal(status, 0, message);
+      return { out: new TextDecoder().decode(out), warnings: JSON.parse(log).map((m) => m.message) };
+    };
+    const reason = (f, why) => `panclude: cannot include "${f}" in standard input: ${why}`;
+    let r = run({ filters: ["panclude"] });
+    assert.match(r.out, /INSIDE/);
+    assert.match(r.out, /SHARED/);
+    assert.doesNotMatch(r.out, /CANARY/);
+    assert.deepEqual(r.warnings, [reason("up/canary.txt", "a symbolic link leads outside the roots"),
+                                  reason("../canary.txt", "outside the roots")]);
+    r = run({ filters: [{ type: "panclude", roots: ["shared"] }] });
+    assert.doesNotMatch(r.out, /INSIDE|CANARY/);
+    assert.match(r.out, /SHARED/);
+    r = run({ filters: ["panclude"], untrusted: true });
+    assert.doesNotMatch(r.out, /INSIDE|SHARED|CANARY/);
+    assert.equal(r.warnings.length, 4);
+    assert.ok(r.warnings.every((w) => w.endsWith("there are no roots, so no file is included")), r.warnings);
+    r = run({ filters: ["panclude"], untrusted: { "panclude-roots": ["/work/shared"] } });
+    assert.match(r.out, /SHARED/);
+    assert.doesNotMatch(r.out, /INSIDE|CANARY/);
+    p.close();
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

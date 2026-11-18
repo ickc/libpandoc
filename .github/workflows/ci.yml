@@ -21,8 +21,9 @@ name: CI
 #     version fixes its browsers' builds) and esbuild by exact version;
 #   - the runners' images, Homebrew, apt and the containers' dnf and apk
 #     packages: not pinned (signed repositories, the runner's versions);
-#   - libpandoc-rs, libpandoc-python and panir: cloned at their HEAD on
-#     purpose, as the integration tests of the owner's own repositories.
+#   - libpandoc-rs, libpandoc-python, panir and panclude: cloned at their
+#     HEAD on purpose, as the integration tests of the owner's own
+#     repositories (panclude: its conformance cases, test/panclude.mjs).
 
 on:
   push:
@@ -142,24 +143,24 @@ jobs:
       # on the runner's Ubuntu; musl's, in a plain Alpine (no GHC, no -dev
       # packages: the libraries it bundles and the system's own only).
       # the smoke test, then the sandbox (citeproc), untrusted (the data
-      # directory), edge-case, time-limit, threads
-      # and cancel tests
+      # directory), edge-case, time-limit, threads, cancel
+      # and include step (panclude) tests
       - name: Tests (C, musl)
         if: matrix.image == 'musllinux_1_2'
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf sh -c '
             apk add -q gcc musl-dev gmp zlib libffi libstdc++ &&
-            for t in smoke sandbox untrusted edge limits threads cancel; do
+            for t in smoke sandbox untrusted edge limits threads cancel panclude; do
               cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,"\$ORIGIN/lib" || exit 1
             done &&
-            dist/smoke dist/share/libpandoc/api-version.json && dist/sandbox && dist/untrusted && dist/edge && dist/limits && dist/threads && dist/cancel &&
-            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel'
+            dist/smoke dist/share/libpandoc/api-version.json && dist/sandbox && dist/untrusted && dist/edge && dist/limits && dist/threads && dist/cancel && dist/panclude &&
+            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel dist/panclude'
 
       - name: Tests (C)
         if: matrix.image != 'musllinux_1_2'
         run: |
-          for t in smoke sandbox untrusted edge limits threads cancel; do
+          for t in smoke sandbox untrusted edge limits threads cancel panclude; do
             case "$RUNNER_OS" in
               Linux)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
               macOS)   cc -Wall -pthread -o dist/$t test/$t.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
@@ -167,8 +168,8 @@ jobs:
             esac
           done
           if [[ $RUNNER_OS == Windows ]]; then
-            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json && ./sandbox.exe && ./untrusted.exe && ./edge.exe && ./limits.exe && ./threads.exe && ./cancel.exe)
-            rm dist/bin/smoke.exe dist/bin/sandbox.exe dist/bin/untrusted.exe dist/bin/edge.exe dist/bin/limits.exe dist/bin/threads.exe dist/bin/cancel.exe
+            (cd dist/bin && ./smoke.exe ../share/libpandoc/api-version.json && ./sandbox.exe && ./untrusted.exe && ./edge.exe && ./limits.exe && ./threads.exe && ./cancel.exe && ./panclude.exe)
+            rm dist/bin/smoke.exe dist/bin/sandbox.exe dist/bin/untrusted.exe dist/bin/edge.exe dist/bin/limits.exe dist/bin/threads.exe dist/bin/cancel.exe dist/bin/panclude.exe
           else
             dist/smoke dist/share/libpandoc/api-version.json
             dist/sandbox
@@ -177,8 +178,24 @@ jobs:
             dist/limits
             dist/threads
             dist/cancel
-            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel
+            dist/panclude
+            rm dist/smoke dist/sandbox dist/untrusted dist/edge dist/limits dist/threads dist/cancel dist/panclude
           fi
+
+      # panclude's conformance cases against the include step built in
+      # (test/panclude.mjs), through pandoc_main (test/command.c). panclude
+      # at its HEAD on purpose (the owner's own)
+      - name: panclude's cases
+        if: matrix.subdir == 'linux-64' || runner.os == 'macOS'
+        run: |
+          case "$RUNNER_OS" in
+            Linux) cc -Wall -o dist/command test/command.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
+            macOS) cc -Wall -o dist/command test/command.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
+          esac
+          git clone --depth 1 https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
+          node --version
+          PANCLUDE="$RUNNER_TEMP/panclude" LIBPANDOC_COMMAND="$PWD/dist/command" node --test test/panclude.mjs
+          rm dist/command
 
       - name: Show size
         run: |
@@ -238,6 +255,15 @@ jobs:
           node --version
           (cd wasm && npm ci)
           node --test wasm/test.mjs
+
+      # panclude's conformance cases against the include step, pandoc_main in
+      # libpandoc.wasm (test/panclude.mjs). panclude at its HEAD on purpose
+      # (the owner's own)
+      - name: panclude's cases in Node
+        run: |
+          source ~/.ghc-wasm/env
+          git clone --depth 1 https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
+          PANCLUDE="$RUNNER_TEMP/panclude" node --test test/panclude.mjs
 
       # Rust filters compiled to wasm (libpandoc-rs's examples, WASI
       # commands) inside a conversion, run by the JS engine. libpandoc-rs at

@@ -82,7 +82,8 @@
  *
  * Paths starting with "libpandoc:" are libpandoc's (callback filters,
  * libpandoc:callback/i, also as a Lua filter's path in the options; JSON
- * filters and citeproc routed through it): don't name files so.
+ * filters, citeproc and the include step routed through it): don't name
+ * files so.
  */
 #ifndef LIBPANDOC_H
 #define LIBPANDOC_H
@@ -133,12 +134,15 @@ extern "C" {
  * after pandoc closed standard input; 1.14: "untrusted" may be an object,
  * {"cancel-token": N} giving the host's token, and any value of it but
  * true, false or an object is an error in pandoc_query too (before, a query
- * took it for trusted); "citeproc-files").
+ * took it for trusted); "citeproc-files"; 1.15: the include step, "panclude"
+ * among the filters ({"type": "panclude", "roots": [...]}; -F panclude on a
+ * command line), and "untrusted": {"panclude-roots": [...]}; untrusted
+ * options may have "filters" naming "panclude" and "citeproc").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 14
+#define LIBPANDOC_ABI_VERSION_MINOR 15
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -273,6 +277,9 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * is on. "citeproc" is allowed (from 1.8), sandboxed as below, but not
  * the options naming its files ("bibliography", "csl",
  * "citation-abbreviations"): references in the document's metadata work.
+ * "filters" may name "panclude" and "citeproc", by those names, and no
+ * other filter (from 1.15): the include step (below) then reads only
+ * inside the roots the host gives, none unless it gives some.
  * Anything else fails with a PandocOptionError naming it. pandoc reads
  * nothing of the user data directory then (from 1.10; before, its
  * templates and the like): templates and their partials, reference
@@ -292,9 +299,12 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * "untrusted" may also be an object (from 1.14): untrusted, as true, plus
  * what the host itself adds to the code's options, which the code's own
  * keys can't say: {"cancel-token": N}, the host's cancel token (as the
- * option "cancel-token", below; "untrusted": {} is the same as true). The
+ * option "cancel-token", below; "untrusted": {} is the same as true), and
+ * {"panclude-roots": ["DIR", ...]} (from 1.15), the include step's roots
+ * (below), a list of directories as "roots" there. The
  * host writes the whole value, as it writes true, so libpandoc trusts what
- * is in it; a top-level "cancel-token" stays refused (the code's own). Any
+ * is in it; a top-level "cancel-token" or "panclude-roots" stays refused
+ * (the code's own). Any
  * other field is a PandocOptionError naming it, and so is any value of
  * "untrusted" but true, false or an object: nothing but false (or no key)
  * is taken for trusted, in every call that takes it.
@@ -373,7 +383,36 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * What doesn't work: a URL (nothing is fetched), styles in a data
  * directory's csl/ (looked up by the data directory's path; an untrusted
  * call's is a temporary directory of its own), a name pandoc doesn't look up
- * (above: "style" for csl: style). */
+ * (above: "style" for csl: style).
+ *
+ * The include step (libpandoc's, from 1.15): "panclude" among the
+ * "filters" (and -F panclude on a command line: pandoc_convert_args,
+ * pandoc_main) is panclude (https://github.com/ickc/panclude, whose SPEC.md
+ * is its contract), the include attribute of code blocks and divs, run
+ * there, as its Lua filter panclude.lua runs under stock pandoc. It belongs
+ * first, so that the filters after it see the files' content; it runs where
+ * it is put, not moved, and filters before it see the elements as the
+ * reader made them. The name is reserved: a program named panclude is not
+ * run (name it ./panclude). It reads files only inside its roots: by
+ * default the main document's directory (its first input file's; the
+ * working directory for standard input, and for input given to
+ * pandoc_convert), or with {"type": "panclude", "roots": ["DIR", ...]}
+ * those directories instead (relative ones from the working directory; one
+ * that isn't a directory is a PandocOptionError, also when nothing is
+ * included, and so is any field but "type" and "roots"). Under pandoc's
+ * sandbox ("sandbox": true, --sandbox) there is no default, as pandoc's
+ * sandbox reads only the files the options name: only roots named so. A
+ * path must lie inside a root as written (. and .. taken by its text) and
+ * once its symbolic links are resolved; the file so resolved is what is
+ * read. An include that fails (outside the roots, missing, not UTF-8, ...)
+ * leaves the element as it was, with a ScriptingWarning in the log (so
+ * "fail-if-warnings" makes it an error) naming the path, the file holding
+ * it and the reason, never the file's content. A file included as a
+ * document is read in pandoc's sandbox, with no files: its own includes
+ * (LaTeX's \input, RST's include) read nothing. Untrusted options may name
+ * it ("filters": ["panclude"]), not its roots: it reads only inside those
+ * the host gives in "untrusted" (above), and without them nothing. In
+ * libpandoc.wasm the same, inside the directories its host opened. */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 
@@ -494,7 +533,10 @@ LIBPANDOC_API pandoc_result *pandoc_convert_args_filters(int argc, const char *c
  *
  * filters_json, if not NULL, is a JSON array (as the "filters" option)
  * replacing the filters pandoc found in the arguments and defaults files;
- * it may name filters[i] as {"type": "callback", "index": i}. A
+ * it may name filters[i] as {"type": "callback", "index": i}, and the
+ * include step with its roots, {"type": "panclude", "roots": [...]} (from
+ * 1.15; -F panclude in the arguments is the step with the default roots:
+ * pandoc_convert). A
  * pandoc-compatible command line uses {"query": "parse-args"} to see those
  * filters, then this to run some of them in process.
  *
@@ -542,9 +584,11 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * the reading options that read no files (not data-dir, resource-path,
  * abbreviations), for untrusted code; the abbreviations are then pandoc's
  * own, or PANDOC_DATA_DIRS's (as for pandoc_convert). "untrusted" may be
- * an object there too, {"cancel-token": N} (from 1.14). "citeproc-files"
- * is pandoc_convert's only (readers run no citeproc): here an unknown
- * option, and refused for untrusted code, both a PandocOptionError. Each
+ * an object there too, {"cancel-token": N} (from 1.14), but without
+ * "panclude-roots" (a PandocOptionError: no filters run here).
+ * "citeproc-files" is pandoc_convert's only (readers run no citeproc):
+ * here an unknown option, and refused for untrusted code, both a
+ * PandocOptionError. Each
  * text is prepared as pandoc prepares its input (tabs expanded unless
  * preserve-tabs, carriage returns dropped).
  *
@@ -590,8 +634,8 @@ LIBPANDOC_API pandoc_result *pandoc_read_many(const char *request, size_t reques
  *                                         "server"), whose arguments aren't
  *                                         pandoc's options
  * The answer is JSON, in result->output. With "untrusted": true (or an
- * object: from 1.14, which can't hold a "cancel-token" here, a
- * PandocOptionError), as for pandoc_convert, only those that read nothing
+ * object: from 1.14, which can't hold a "cancel-token" here, nor a
+ * "panclude-roots", a PandocOptionError), as for pandoc_convert, only those that read nothing
  * of the user's: not default-template nor parse-args. Any other value of
  * "untrusted" but false is a PandocOptionError (from 1.14; before, the
  * query was answered as trusted). */

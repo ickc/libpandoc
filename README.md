@@ -70,7 +70,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.14 now; the embedded pandoc's version and its
+are this C interface's own, 1.15 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -97,8 +97,9 @@ only options that read no files, write none, fetch nothing and run
 nothing (the reading ones, and those that only shape the output: `to`,
 `standalone`, `toc`, `variables`, ...), formats by name (no Lua readers or
 writers, no `pdf`), input given rather than files, and pandoc's sandbox
-on. Anything else fails with a `PandocOptionError` naming it: filters,
-templates, output files, `data-dir`, `bibliography`, `csl`, ... So only
+on. Anything else fails with a `PandocOptionError` naming it: filters
+(but the include step and citeproc, by name: below), templates, output
+files, `data-dir`, `bibliography`, `csl`, ... So only
 pandoc's own code runs, and it reads nothing but the input and pandoc's
 own data: not the user data directory's templates, reference documents,
 abbreviations, translations or styles (1.10). `PANDOC_DATA_DIRS` is
@@ -114,7 +115,8 @@ The host writes `"untrusted"` itself, over whatever the code wrote, so
 its value is the host's. It may be an object (1.14) of what the host adds
 to the code's options: `"untrusted": {"cancel-token": N}` gives the host's
 cancel token (below), which a top-level `"cancel-token"` can't (the code
-could have written it: refused). `{}` is the same as `true`. Any other
+could have written it: refused), and `{"panclude-roots": [...]}` (1.15)
+the include step's roots (below). `{}` is the same as `true`. Any other
 field, and any value but `true`, `false` or an object, is an error,
 in `pandoc_query` too (1.14; before, a query took such a value for
 trusted): nothing but `false` or no key is trusted.
@@ -189,6 +191,75 @@ with "does not exist", and pandoc prints some such errors as they are
 path it names lies outside those directories, though nothing of what is
 there. Where even that must stay hidden, run the conversion where only
 those directories exist: a container, or a virtual machine.
+
+### The include step: panclude
+
+`"panclude"` among the filters (1.15) is
+[panclude](https://github.com/ickc/panclude): the `include` attribute of
+code blocks and divs, run inside the conversion, so that every filter
+after it sees the files' content as if the document held it.
+
+````markdown
+```{.haskell include="src/Main.hs" startLine=10 endLine=24}
+```
+
+::: {include="chapters/intro.md" shift-heading-level-by=1}
+:::
+````
+
+A code block takes the file's text; with `raw="latex"` it becomes raw
+content; a div is filled with the file read as a document. Its
+specification (`SPEC.md` there) is the contract, and its cases run in this
+repository's CI against the step built in (`test/panclude.mjs`, natively
+and in libpandoc.wasm). Under stock pandoc, its Lua filter `panclude.lua`
+is the same behaviour, with what a Lua filter can do: it reads whatever
+the process can, and doesn't know the main reader's name (libpandoc tells
+it, `PANDOC_INPUT_FORMAT`).
+
+Turning it on: the name `panclude` among the filters, as `citeproc` is one:
+`"filters": ["panclude", "other.lua"]`, `-F panclude` on a command line
+(`pandoc_main`, `pandoc_convert_args`). The name is reserved: a program
+called `panclude` isn't run (name it `./panclude`). It belongs first, so
+that the filters after it see the content; it runs where it is put
+(libpandoc neither moves it nor warns), so filters before it see the
+elements as the reader made them. Off unless named.
+
+What it reads: only inside its **roots**, directories and what is below
+them.
+- By default the main document's directory: its first input file's, the
+  working directory for standard input and for input given to
+  `pandoc_convert`.
+- `{"type": "panclude", "roots": ["chapters", "/srv/shared"]}` names them
+  instead (relative ones from the working directory; in `pandoc_convert`'s
+  options and `pandoc_main`'s `filters_json`). A root that isn't a
+  directory, any field but `"type"` and `"roots"`, is a
+  `PandocOptionError`.
+- A path must lie inside a root as written (`..` taken by its text) and
+  once its symbolic links are resolved: `../x`, `/etc/passwd` and a link
+  leading out are failures, whether the file exists or not. The file so
+  resolved is what is read. URLs never.
+- A file included as a document is read in pandoc's sandbox, with no
+  files: its own includes (LaTeX's `\input`, RST's `include`) read
+  nothing.
+
+An include that fails leaves the element as it was, with a
+`ScriptingWarning` in the log naming the path, the file holding it and the
+reason (`outside the roots`, `a symbolic link leads outside the roots`,
+`not found`, ...; never the file's content), so `"fail-if-warnings"`
+makes it an error.
+
+**pandoc's sandbox** (`"sandbox": true`, `--sandbox`): pandoc's sandbox
+reads only the files the options name, and the step likewise only roots
+named in its entry: `"panclude"` alone has none, and every include fails
+(`there are no roots, so no file is included`). **Untrusted options** may
+name the step, `"filters": ["panclude"]` (and `"citeproc"`, no other
+filter, nor roots of their own): it then reads only inside the roots the
+host gives, `"untrusted": {"panclude-roots": [...]}`, and without them
+nothing. So a host gives code it doesn't trust exactly the directories it
+may include from, and that code's filters, run after the step, need no
+files at all: a wasm filter given no directory sees the content. **In
+libpandoc.wasm** (the bindings' directory sandbox) the step is the same,
+inside the directories the host opened.
 
 ### Cancelling a call
 
@@ -292,7 +363,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.14 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.15 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the

@@ -12,12 +12,17 @@ sandbox is on. That includes citeproc, which libpandoc runs inside the
 sandbox too, with the files the options name; untrusted options name none
 (no @bibliography@, @csl@, @citation-abbreviations@), so only a document's
 own references, in its metadata, and files given as their contents
-(@citeproc-files@), work. The one list every host shares (pandocrs,
-libpandoc.wasm's JavaScript, LibPandoc.jl), rather than a copy in each.
+(@citeproc-files@), work. And the include step ("LibPandoc.Panclude"):
+@"filters"@ may name it, @"panclude"@, and @"citeproc"@, nothing else; it
+reads only inside the roots the host gives, none unless it gives some. The
+one list every host shares (pandocrs, libpandoc.wasm's JavaScript,
+LibPandoc.jl), rather than a copy in each.
 
 The host sets @"untrusted"@ itself, over whatever the code wrote, so its
 value is the host's: @true@, or an object of what the host adds to the
-code's options (its @"cancel-token"@, which the code's options can't name).
+code's options, which the code's options can't name: its
+@"cancel-token"@, and @"panclude-roots"@, the include step's roots
+(pandoc_convert only).
 -}
 module LibPandoc.Untrusted
   ( Call (..)
@@ -28,6 +33,7 @@ module LibPandoc.Untrusted
   , queries
   ) where
 
+import Control.Monad (when)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
@@ -80,11 +86,18 @@ untrusted call (Aeson.Object o) = trust o >>= \case
   Nothing -> Right (False, Aeson.Object o')
   Just host -> do
     mapM_ check (KM.toList o')
+    when (call == ReadMany && KM.member "panclude-roots" host) $
+      Left "\"untrusted\": \"panclude-roots\" is for pandoc_convert (pandoc_read_many runs no filters)"
     Right (True, Aeson.Object (KM.union host (KM.insert "sandbox" (Aeson.Bool True) o')))
   where
     o' = KM.delete "untrusted" o
     allowed k = k `elem` readOptions || (call == Convert && k `elem` writeOptions)
     check (key, v)
+      -- the include step and citeproc, by name: both read only what the
+      -- host allows (the step its roots, citeproc in the sandbox)
+      | k == "filters", call == Convert = case v of
+          Aeson.Array fs | all (`elem` [Aeson.String "panclude", Aeson.String "citeproc"]) fs -> Right ()
+          _ -> refuse "filters (but \"panclude\" and \"citeproc\" by name)"
       | not (allowed k) = refuse (T.unpack k)
       | k `elem` ["from", "reader", "to", "writer"] = case v of
           Aeson.String f | formatName f
@@ -101,6 +114,7 @@ untrustedQuery o = trust o >>= \case
   Nothing -> Right ()
   Just host
     | KM.member "cancel-token" host -> Left "\"untrusted\": a query takes no \"cancel-token\""
+    | KM.member "panclude-roots" host -> Left "\"untrusted\": a query takes no \"panclude-roots\""
     | otherwise -> case KM.lookup "query" o of
         Just (Aeson.String q) | q `elem` queries -> Right ()
         q -> Left ("query not allowed for untrusted code: " <> maybe "none" show q)
@@ -108,17 +122,18 @@ untrustedQuery o = trust o >>= \case
 -- | The value of @"untrusted"@, the one reading of it for every call:
 -- trusted (Nothing) only when it is absent or @false@; untrusted when it is
 -- @true@ (the host adds nothing) or an object of what the host adds (only
--- @"cancel-token"@); anything else is an error, so that nothing is taken
--- for trusted by mistake.
+-- @"cancel-token"@ and @"panclude-roots"@, which their own parsers check);
+-- anything else is an error, so that nothing is taken for trusted by
+-- mistake.
 trust :: Aeson.Object -> Either String (Maybe Aeson.Object)
 trust o = case KM.lookup "untrusted" o of
   Nothing -> Right Nothing
   Just (Aeson.Bool False) -> Right Nothing
   Just (Aeson.Bool True) -> Right (Just KM.empty)
-  Just (Aeson.Object host) -> case filter (/= "cancel-token") (KM.keys host) of
+  Just (Aeson.Object host) -> case filter (`notElem` ["cancel-token", "panclude-roots"]) (KM.keys host) of
     [] -> Right (Just host)
     k : _ -> Left ("\"untrusted\": unknown field " <> show (K.toText k)
-                   <> " (the host's own options: \"cancel-token\")")
+                   <> " (the host's own options: \"cancel-token\", \"panclude-roots\")")
   Just v -> Left ("\"untrusted\" is true, false or an object, not " <> show v)
 
 refuse :: String -> Either String a

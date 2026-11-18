@@ -58,6 +58,11 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   garbage-collected, else when the process exits; `browser.mjs`'s is a
   `Map` in memory, emptied by `close()`. A closed instance throws a
   `StoppedError`.
+- **The include step** (`"panclude"` among the filters, 1.15: the
+  top-level README) is the same here, inside the directories the host
+  opened: it resolves symbolic links itself, part by part, so that a link
+  to a directory outside its roots is refused although `node:wasi` would
+  follow it (`test.mjs`).
 - **Not in it:** threads (`read_many` reads one after another), JSON filters
   (WASI can't start processes), `pandoc lua`, PDF, HTTP.
 - **Engines** (tested 2026-09-28 with Playwright's browsers,
@@ -295,7 +300,9 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   relative paths resolve: libpandoc-python sets it to Python's.
 - **Tests** (`npm install` in `wasm/` first): `test.mjs` (Node),
   `test-main.mjs` (`pandoc_main` in Node; with `PANDOC`, compared with the
-  command; with `WASM_FILTERS`, `-F x.wasm`),
+  command; with `WASM_FILTERS`, `-F x.wasm`), `../test/panclude.mjs`
+  (`PANCLUDE=` a checkout of panclude: its conformance cases against the
+  include step, `pandoc_main` in Node; natively with `LIBPANDOC_COMMAND`),
   `test-browser.mjs` (Chromium, Firefox, WebKit with Playwright),
   `test-pyodide.mjs` (Python filters in Pyodide), `test-pyodide-suite.mjs`
   (libpandoc-python's tests in Pyodide; `SHIM=1` through the shared
