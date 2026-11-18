@@ -291,3 +291,128 @@ test("what a filter on bytes wrote a wasm filter is given unchecked; failing on 
   assert.throws(run(true), (e) => e instanceof PandocError && /invalid document/.test(e.message)
     && !/its input is what/.test(e.message));
 });
+
+// -- the environment ------------------------------------------------------------------
+
+// The host's own variables, in a conversion to JSON.
+const OWN = ["PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_READER_OPTIONS",
+  "PANDOC_SANDBOX", "PANDOC_VERSION", "PANDOC_WRITER_OPTIONS"];
+// What the example filter `conversion` was told: its report (the names of
+// the variables it sees, `env`, and the values of those named
+// LIBPANDOC_TEST_..., `test-env`).
+const told = (f, instance = pandoc, filtersJson = undefined) => {
+  const options = { from: "markdown", to: "json", ...(filtersJson && { filters: filtersJson }) };
+  const doc = JSON.parse(instance.convertWithFilters(options, "x", [f]));
+  return { doc, told: JSON.parse(doc.blocks.at(-1).c[1]) };
+};
+// The variables it saw besides the host's own, and the LIBPANDOC_TEST_ values.
+const seen = (f) => {
+  const t = told(f).told;
+  for (const n of OWN) assert.equal(t.env.filter((x) => x === n).length, 1, n);
+  return [t.env.filter((n) => !OWN.includes(n)), t["test-env"]];
+};
+const quoted = (name) => JSON.stringify(name.includes("=") ? `${name.split("=", 1)[0]}=...` : name);
+// The variables as given (undefined: unset) while `body` runs, then as they
+// were (the tests of a file run one after another).
+async function withEnv(vars, body) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const set = (vs) => {
+    for (const [k, v] of Object.entries(vs)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  set(vars);
+  try {
+    return await body();
+  } finally {
+    set(saved);
+  }
+}
+const TEST_ENV = { LIBPANDOC_WASM_ENV: undefined, LIBPANDOC_TEST_MISSING: undefined, LIBPANDOC_TEST_A: "a",
+  LIBPANDOC_TEST_B: "b", LIBPANDOC_TEST_SECRET: "canary" };
+
+test("the environment: none of the process's by default, the host's own only", () => withEnv(TEST_ENV, async () => {
+  const t = told(await filter("conversion")).told;
+  assert.deepEqual([t.env, t["test-env"]], [OWN, {}]);
+}));
+
+test("the environment: given by name (the values when the filter is made) or with values", () => withEnv(TEST_ENV, async () => {
+  const f = await filter("conversion", { env: ["LIBPANDOC_TEST_A", "LIBPANDOC_TEST_MISSING", "LIBPANDOC_TEST_A"] });
+  await withEnv({ LIBPANDOC_TEST_A: "later" }, () => {
+    assert.deepEqual(seen(f), [["LIBPANDOC_TEST_A"], { LIBPANDOC_TEST_A: "a" }]);
+  });
+  const g = await filter("conversion", { env: { LIBPANDOC_TEST_B: "given", LIBPANDOC_TEST_C: "c" } });
+  assert.deepEqual(seen(g), [["LIBPANDOC_TEST_B", "LIBPANDOC_TEST_C"], { LIBPANDOC_TEST_B: "given", LIBPANDOC_TEST_C: "c" }]);
+  for (const env of [[], {}]) assert.deepEqual(seen(await filter("conversion", { env })), [[], {}]);
+}));
+
+test("LIBPANDOC_WASM_ENV: read when the filter is made; the API's env replaces it", () => withEnv(TEST_ENV, async () => {
+  const names = ",LIBPANDOC_TEST_A,,LIBPANDOC_TEST_MISSING,LIBPANDOC_TEST_B,LIBPANDOC_TEST_A,";
+  const f = await withEnv({ LIBPANDOC_WASM_ENV: names }, () => filter("conversion"));
+  await withEnv({ LIBPANDOC_TEST_A: "later", LIBPANDOC_TEST_MISSING: "late" }, () => {
+    assert.deepEqual(seen(f), [["LIBPANDOC_TEST_A", "LIBPANDOC_TEST_B"], { LIBPANDOC_TEST_A: "a", LIBPANDOC_TEST_B: "b" }]);
+  });
+  assert.deepEqual(seen(await filter("conversion")), [[], {}]); // (made with it unset)
+  await withEnv({ LIBPANDOC_WASM_ENV: names }, async () => {
+    for (const env of [[], {}]) assert.deepEqual(seen(await filter("conversion", { env })), [[], {}]);
+    assert.deepEqual(seen(await filter("conversion", { env: ["LIBPANDOC_TEST_SECRET"] }))[1],
+                     { LIBPANDOC_TEST_SECRET: "canary" });
+    assert.deepEqual(seen(await filter("conversion", { env: { LIBPANDOC_TEST_C: "c" } }))[1], { LIBPANDOC_TEST_C: "c" });
+  });
+}));
+
+test("the environment: the host's own variables win over a grant", () => withEnv(
+  { ...TEST_ENV, PANDOC_SANDBOX: "yes", PANDOC_VERSION: "0" }, async () => {
+    const fs = [await filter("conversion", { env: { PANDOC_VERSION: "0", PANDOC_SANDBOX: "yes" } }),
+      await filter("conversion", { env: ["PANDOC_SANDBOX", "PANDOC_VERSION"] }),
+      await withEnv({ LIBPANDOC_WASM_ENV: "PANDOC_SANDBOX,PANDOC_VERSION" }, () => filter("conversion"))];
+    for (const f of fs) {
+      const t = told(f).told;
+      assert.deepEqual([t["pandoc-version"], t.sandbox, t.env], [version, "false", OWN]);
+    }
+  }));
+
+test("the environment: what can't be a name is an error naming it, never a value", () => withEnv(TEST_ENV, async () => {
+  for (const [entry, bad] of [["LIBPANDOC_TEST_A,A B", "A B"], [" LIBPANDOC_TEST_A", " LIBPANDOC_TEST_A"],
+    ["A\tB", "A\tB"], ["LIBPANDOC_TEST_A=canary,B", "LIBPANDOC_TEST_A=canary"], ["=canary", "=canary"]]) {
+    await withEnv({ LIBPANDOC_WASM_ENV: entry }, () => assert.rejects(filter("conversion"), (e) =>
+      e.message === `LIBPANDOC_WASM_ENV: not a variable's name: ${quoted(bad)}` && !e.message.includes("canary")));
+  }
+  assert.equal(quoted("A B"), '"A B"');
+  assert.equal(quoted("TOKEN=canary"), '"TOKEN=..."');
+  for (const name of ["A B", "", "A\0B", " ", "LIBPANDOC_TEST_A=canary"]) {
+    for (const env of [[name], { [name]: "canary" }]) {
+      await assert.rejects(filter("conversion", { env }),
+                           (e) => e.message === `conversion.wasm: not a variable's name: ${quoted(name)}`);
+    }
+  }
+  await assert.rejects(filter("conversion", { env: { LIBPANDOC_TEST_C: "can\0ary" } }),
+                       (e) => e.message === "conversion.wasm: LIBPANDOC_TEST_C: its value has a NUL");
+  for (const env of ["LIBPANDOC_TEST_A", { LIBPANDOC_TEST_A: 1 }, [1], null]) {
+    await assert.rejects(filter("conversion", { env }), (e) => e instanceof TypeError && !e.message.includes("LIBPANDOC_TEST_A"));
+  }
+}));
+
+test("the environment: pandoc in libpandoc.wasm, and its Lua filters, don't get a grant", () => withEnv(
+  { ...TEST_ENV, LIBPANDOC_WASM_ENV: "LIBPANDOC_TEST_A" }, async () => {
+    const work = mkdtempSync(join(tmpdir(), "wasm-filter-env-"));
+    try {
+      writeFileSync(join(work, "env.lua"), "function Pandoc(doc)\n"
+        + "  doc.meta.granted = tostring(os.getenv('LIBPANDOC_TEST_A'))\n"
+        + "  doc.meta.tmpdir = tostring(os.getenv('TMPDIR'))\n"
+        + "  return doc\nend\n");
+      const instance = await load(path, { preopens: { "/work": work } });
+      try {
+        const f = await filter("conversion");
+        const { doc, told: t } = told(f, instance, [{ type: "lua", path: "/work/env.lua" }, { type: "callback", index: 0 }]);
+        assert.equal(doc.meta.granted.c, "nil");
+        assert.notEqual(doc.meta.tmpdir.c, "nil");
+        assert.deepEqual(t["test-env"], { LIBPANDOC_TEST_A: "a" });
+      } finally {
+        instance.close?.();
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }));

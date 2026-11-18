@@ -167,3 +167,29 @@ test("consecutive wasm filters on the command line: one exchange, unless LIBPAND
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /LIBPANDOC_SEPARATE_FILTERS: 1 .*, or 0 or empty, not "yes"/);
 });
+
+test("a wasm filter on the command line: the variables LIBPANDOC_WASM_ENV names, no other",
+     { skip: !filters && "WASM_FILTERS not set" }, () => {
+  const conversion = join(filters, "conversion.wasm");
+  const run = (names) => wasm(["-t", "json", "-F", conversion], {
+    input: "x", env: { LIBPANDOC_WASM_ENV: names, LIBPANDOC_TEST_A: "a", LIBPANDOC_TEST_SECRET: "canary", PANDOC_VERSION: "0" },
+  });
+  const told = (r) => {
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(JSON.parse(r.stdout).blocks.at(-1).c[1]);
+  };
+  const own = ["PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_READER_OPTIONS", "PANDOC_SANDBOX",
+    "PANDOC_VERSION", "PANDOC_WRITER_OPTIONS"];
+  let t = told(run(""));
+  assert.deepEqual(t["test-env"], {});
+  assert.ok(t.env.every((n) => own.includes(n)), t.env);
+  t = told(run("LIBPANDOC_TEST_A,,LIBPANDOC_TEST_MISSING,PANDOC_VERSION"));
+  assert.deepEqual(t["test-env"], { LIBPANDOC_TEST_A: "a" });
+  assert.notEqual(t["pandoc-version"], "0");
+  for (const [names, bad] of [["LIBPANDOC_TEST_A,A B", '"A B"'], ["LIBPANDOC_TEST_SECRET=canary", '"LIBPANDOC_TEST_SECRET=..."']]) {
+    const r = run(names);
+    assert.notEqual(r.status, 0);
+    assert.ok(r.stderr.includes(`LIBPANDOC_WASM_ENV: not a variable's name: ${bad}`), r.stderr);
+    assert.ok(!(r.stdout + r.stderr).includes("canary"), r.stderr);
+  }
+});

@@ -201,7 +201,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   compiled once and instantiated per run, synchronously, with an in-memory
   stdin and stdout, seeing only the directories given
   (`browser_wasi_shim`, in the browser and Node alike): by default none,
-  as a wasm filter is for code not trusted. In Node,
+  as a wasm filter is for code not trusted, and none of the process's
+  environment variables (below). In Node,
   `LIBPANDOC_WASM_DIRS` gives some, as pandocrs, pandocpy and pandocjl
   take it: directories as `PATH` lists them (`:`, on Windows `;`; unset
   or empty: none), read-only (`node-dir.mjs`: a link or `..` leaving one
@@ -248,6 +249,40 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   have: a filter runs synchronously on the conversion's thread, which
   nothing can interrupt. For one, run the conversion in a Worker and
   terminate it.
+
+  **Environment variables** configure filters (pandoc-ext's pagebreak
+  reads `PANDOC_PAGEBREAK_HTML_CLASS` and `PANDOC_PAGEBREAK_ODT_STYLE`),
+  and they also hold tokens and passwords, which a filter run without
+  auditing it is not to have. So a wasm filter gets only those pandoc
+  gives filters (`PANDOC_VERSION`, `PANDOC_READER_OPTIONS`, and libpandoc's
+  `PANDOC_WRITER_OPTIONS`, `PANDOC_INPUT_FORMAT`, `PANDOC_OUTPUT_FORMAT`,
+  `PANDOC_SANDBOX`), and none of the process's unless given:
+  `wasmFilter`'s `env`, an array of names (in Node; their values the
+  process's when the filter is made) or an object of names and values
+  (anywhere: a browser has no process environment, so there only names
+  with values work, and names alone are an error); `[]` or `{}`: none. In
+  Node, by default, `LIBPANDOC_WASM_ENV` names some, as pandocrs, pandocpy
+  and pandocjl take it: names separated by commas (empty entries skipped;
+  one the process doesn't have is left out), read with their values when
+  the filter is made, as `LIBPANDOC_WASM_DIRS` is; an `env` given
+  replaces it. A name that can't be a variable's (with `=`, a NUL or
+  white space) is an `Error` when the filter is made, naming it up to an
+  `=` (what follows may be a value): `LIBPANDOC_WASM_ENV: not a
+  variable's name: "A B"`, `... "TOKEN=..."`, or in `env` `NAME: not a
+  variable's name: "A B"` (`NAME` the filter's `name`); so is a value with
+  a NUL in `env`, and a value that isn't UTF-8 (a lone surrogate, on
+  Windows; elsewhere Node puts U+FFFD for what isn't UTF-8 before the host
+  sees it). No message ever shows a value. The variables pandoc gives
+  filters are the host's: a grant of one of those names is not passed. A
+  filter can't tell a variable not set from one not given, and the host
+  can't see what a filter looks up: nothing says a filter missed one. So a
+  filter does better to read its configuration from the document's
+  metadata, which is in the document for all to see and works in every
+  host, with the environment as an override at most. All this is about
+  wasm filters only: pandoc in libpandoc.wasm, and its Lua filters, get
+  the environment the instance is given (`TMPDIR` and an empty `PATH` in
+  Node), whatever `LIBPANDOC_WASM_ENV` says, and JS filters see what the
+  page or process sees.
 - **Pyodide:** `wasm/emscripten-fs.mjs` makes WASI directories out of
   Pyodide's filesystem, so that Python and pandoc see the same files:
   `load(url, { tmp: emscriptenDirectory(py.FS, "/tmp") })`. `pyodide.mjs`

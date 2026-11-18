@@ -21,6 +21,16 @@
 // to the working directory (node-dir.mjs's hostPreopens). A filter that
 // fails while it has no directory says so.
 //
+// Of the environment it gets the host's own variables (PANDOC_VERSION,
+// PANDOC_READER_OPTIONS, PANDOC_WRITER_OPTIONS, PANDOC_INPUT_FORMAT,
+// PANDOC_OUTPUT_FORMAT, PANDOC_SANDBOX), and by default none of the
+// process's: environment variables configure filters, and they also hold
+// tokens. `env` gives a filter some: names (in Node, their values the
+// process's when the filter is made) or names with values (anywhere: a
+// browser has no process environment). In Node, by default, those
+// $LIBPANDOC_WASM_ENV names (NAME,NAME), read when the filter is made. A
+// name with "=", a NUL or white space is an error; no error shows a value.
+//
 // A filter may call pandoc (libpandoc-rs's `libpandoc::read` and the like,
 // built for wasm): its `libpandoc` imports are calls to the libpandoc.wasm
 // it runs in (or to `pandoc`, if given: core.mjs's, from node.mjs or
@@ -177,6 +187,81 @@ function wasmDirs(s) {
   return (s ?? "").split(delimiter).filter((d) => d !== "");
 }
 
+// The variables the host sets for a filter: its own, never a grant's.
+const OWN_VARS = new Set(["PANDOC_VERSION", "PANDOC_READER_OPTIONS", "PANDOC_WRITER_OPTIONS",
+  "PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_SANDBOX"]);
+// What a variable's name can't have besides "=": a NUL, white space
+// (Unicode's White_Space, as the other hosts take it).
+const NOT_IN_A_NAME = /[\0\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u;
+
+/** Why `name` can't be a variable's (empty, or with "=", a NUL or white
+ *  space), or null if it can. It shows the name up to an "=" only, as what
+ *  follows may be a value. */
+function nameError(name) {
+  let shown;
+  if (name.includes("=")) shown = `${name.split("=", 1)[0]}=...`;
+  else if (!name || NOT_IN_A_NAME.test(name) || !name.isWellFormed()) shown = name;
+  else return null;
+  return `not a variable's name: ${JSON.stringify(shown)}`;
+}
+
+/** This process's value of the variable `name`, if it has one (Node); an
+ *  error, naming it, if it isn't UTF-8 (on Windows, a lone surrogate; on
+ *  other systems Node has put U+FFFD for what isn't UTF-8 already). */
+function processValue(name, prefix) {
+  const v = globalThis.process?.env?.[name];
+  if (v !== undefined && !v.isWellFormed()) throw new Error(`${prefix}: ${name}: its value is not UTF-8`);
+  return v;
+}
+
+/** The variables a filter is given besides the host's own, as [name,
+ *  value]: `env` (names, their values this process's now, or an object of
+ *  names and values), else in Node $LIBPANDOC_WASM_ENV's names (NAME,NAME;
+ *  empty entries skipped) with this process's values now; one the process
+ *  doesn't have left out; the last of a name kept. An error, naming the
+ *  filter or the variable, for a name that can't be a variable's; never
+ *  showing a value. */
+function givenEnv(env, name) {
+  const node = !!globalThis.process?.versions?.node;
+  let pairs;
+  if (env === undefined) {
+    const names = node ? (globalThis.process.env.LIBPANDOC_WASM_ENV ?? "").split(",").filter((n) => n !== "") : [];
+    for (const n of names) {
+      const e = nameError(n);
+      if (e) throw new Error(`LIBPANDOC_WASM_ENV: ${e}`);
+    }
+    pairs = names.map((n) => [n, processValue(n, "LIBPANDOC_WASM_ENV")]);
+  } else if (Array.isArray(env)) {
+    if (!env.every((n) => typeof n === "string"))
+      throw new TypeError(`${name}: env is a list of names, or an object of names and values (strings)`);
+    for (const n of env) {
+      const e = nameError(n);
+      if (e) throw new Error(`${name}: ${e}`);
+    }
+    if (env.length && !node)
+      throw new Error(`${name}: env names variables of a process, which there is none of here: give names and values ({ NAME: "value" })`);
+    pairs = env.map((n) => [n, processValue(n, name)]);
+  } else if (env !== null && typeof env === "object") {
+    pairs = Object.entries(env);
+    if (!pairs.every(([, v]) => typeof v === "string"))
+      throw new TypeError(`${name}: env is a list of names, or an object of names and values (strings)`);
+    for (const [n, v] of pairs) {
+      const e = nameError(n);
+      if (e) throw new Error(`${name}: ${e}`);
+      if (v.includes("\0")) throw new Error(`${name}: ${n}: its value has a NUL`);
+    }
+  } else {
+    throw new TypeError(`${name}: env is a list of names, or an object of names and values (strings)`);
+  }
+  const kept = new Map();
+  for (const [n, v] of pairs) {
+    if (v === undefined || OWN_VARS.has(n)) continue;
+    kept.delete(n);
+    kept.set(n, v);
+  }
+  return [...kept];
+}
+
 /** A filter from a wasm module (its bytes, or a compiled
  *  WebAssembly.Module, which can't be given a `maxMemory`). `name` is its
  *  first argument (argv[0]); `maxMemory`: the most memory it may have, in
@@ -185,15 +270,21 @@ function wasmDirs(s) {
  *  PreopenDirectory, node-dir.mjs's; by default none, but in Node
  *  $LIBPANDOC_WASM_DIRS's, as node-dir.mjs's hostPreopens gives them,
  *  found when it runs; a `preopens` given, also [], replaces them);
+ *  `env`: variables it is given besides the host's own: an array of names,
+ *  their values this process's when the filter is made (Node only), or an
+ *  object of names and values (anywhere); by default, in Node, those
+ *  $LIBPANDOC_WASM_ENV names (NAME,NAME), read then; [] or {}: none.
  *  `pandocVersion`: for PANDOC_VERSION (by default,
  *  the pandoc's it runs in); `pandoc`: the libpandoc.wasm (core.mjs's) the
  *  filter's calls to pandoc go to (by default, the one it runs in); `stderr`:
  *  where its standard error's lines go. The result is a function on bytes,
  *  as core.mjs's convertWithFilters takes. */
-export async function wasmFilter(source, { name = "filter.wasm", preopens, pandoc = null,
+export async function wasmFilter(source, { name = "filter.wasm", preopens, env, pandoc = null,
   pandocVersion = pandoc?.query({ query: "version" }) ?? null,
   stderr = (line) => console.warn(`[${name}] ${line}`),
   maxMemory = parseMemory(globalThis.process?.env?.LIBPANDOC_WASM_MAX_MEMORY) } = {}) {
+  // (before compiling it; read now, as the directories' names are)
+  const granted = givenEnv(env, name).map(([k, v]) => `${k}=${v}`);
   if (maxMemory != null && source instanceof WebAssembly.Module)
     throw new Error(`${name}: maxMemory needs the module's bytes, not a compiled module`);
   if (maxMemory != null) source = withMaxMemory(source, maxMemory, name);
@@ -225,6 +316,7 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens, pando
     if (ctx["output-format"]) env.push(`PANDOC_OUTPUT_FORMAT=${ctx["output-format"]}`);
     // (libpandoc 1.13)
     if (typeof ctx.sandbox === "boolean") env.push(`PANDOC_SANDBOX=${ctx.sandbox}`);
+    env.push(...granted);
     const dirsGiven = given();
     const stdout = new File([]);
     const fds = [
