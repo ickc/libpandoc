@@ -44,6 +44,16 @@ if (wasmFilters) {
   const parse = await wasmFilter(await (await fetch("/filters/parse.wasm")).arrayBuffer(), { name: "parse.wasm", pandoc });
   check("wasm filter calling pandoc", () =>
     pandoc.convertWithFilters({ to: "html" }, "~~~ parse\\n*a*\\n~~~\\n", [parse]) === "<p><em>a</em></p>\\n");
+  // no process environment here: variables only with their values
+  const conversion = await (await fetch("/filters/conversion.wasm")).arrayBuffer();
+  const given = await wasmFilter(conversion, { name: "conversion.wasm", env: { LIBPANDOC_TEST_A: "a" } });
+  check("wasm filter given a variable", () => {
+    const told = JSON.parse(JSON.parse(pandoc.convertWithFilters({ to: "json" }, "x", [given])).blocks.at(-1).c[1]);
+    return told["test-env"].LIBPANDOC_TEST_A === "a" || JSON.stringify(told);
+  });
+  const names = await wasmFilter(conversion, { name: "conversion.wasm", env: ["LIBPANDOC_TEST_A"] })
+    .then(() => "no error", (e) => e.message);
+  check("wasm filter given names, which a browser has no values for", () => names.includes("give names and values") || names);
 }
 let t = performance.now();
 check("800 paragraphs", () => pandoc.convert({ to: "html" }, md(800, "Paragraph with *emphasis* and [a link](u).", "\\n\\n")).length > 0);
