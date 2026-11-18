@@ -11,9 +11,9 @@ writes none, fetches nothing and runs no programs is accepted, and pandoc's
 sandbox is on. That includes citeproc, which libpandoc runs inside the
 sandbox too, with the files the options name; untrusted options name none
 (no @bibliography@, @csl@, @citation-abbreviations@), so only a document's
-own references, in its metadata, work. The one list every host shares
-(pandocrs, libpandoc.wasm's JavaScript, LibPandoc.jl), rather than a copy
-in each.
+own references, in its metadata, and files given as their contents
+(@citeproc-files@), work. The one list every host shares (pandocrs,
+libpandoc.wasm's JavaScript, LibPandoc.jl), rather than a copy in each.
 
 The host sets @"untrusted"@ itself, over whatever the code wrote, so its
 value is the host's: @true@, or an object of what the host adds to the
@@ -48,10 +48,11 @@ readOptions =
 
 -- | With 'readOptions', for 'Convert'. Formats are names (not Lua
 -- writers), and not @pdf@ (which runs a PDF engine). @citeproc@: in the
--- sandbox (LibPandoc's @citeprocSandboxed@).
+-- sandbox (LibPandoc's @citeprocSandboxed@); @citeproc-files@ (libpandoc's,
+-- not pandoc's): its files as their contents, read from nowhere.
 writeOptions :: [T.Text]
 writeOptions =
-  [ "to", "writer", "ascii", "citeproc", "cite-method", "dpi"
+  [ "to", "writer", "ascii", "citeproc", "citeproc-files", "cite-method", "dpi"
   , "email-obfuscation", "eol"
   , "fail-if-warnings", "figure-caption-position", "html-math-method"
   , "html-q-tags", "identifier-prefix", "incremental", "list-tables"

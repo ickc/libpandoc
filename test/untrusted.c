@@ -5,7 +5,9 @@
  * files this test writes (and removes) under the current directory.
  *
  * Also (1.14): "untrusted" as an object, which is untrusted too, and
- * malformed values, which are errors (never trusted).
+ * malformed values, which are errors (never trusted); and citeproc's files
+ * given as their contents ("citeproc-files"), with canary files of the
+ * same and other names on the disk (ut-cf/), which are never read.
  *
  *   cc test/untrusted.c -Idist/include -Ldist/lib -lpandoc && ./a.out
  *
@@ -182,6 +184,131 @@ static void untrusted_values(void)
     }
 }
 
+/* citeproc's files given as their contents ("citeproc-files", 1.14) */
+#define CF_BIB "@article{k, title={Givenness}, author={Au, Thor}, year={1999}, journal={Long Journal Name}}"
+#define CF_CSL "<?xml version='1.0' encoding='utf-8'?><style xmlns='http://purl.org/net/xbiblio/csl'" \
+    " class='in-text' version='1.0'><info><title>T</title><id>t</id>" \
+    "<updated>2020-01-01T00:00:00+00:00</updated></info><citation><layout prefix='[STYLE ' suffix=']'>" \
+    "<group delimiter=', '><text variable='title'/><text variable='container-title' form='short'/>" \
+    "</group></layout></citation></style>"
+#define CF_ABBR "{\\\"default\\\": {\\\"container-title\\\": {\\\"Long Journal Name\\\": \\\"LJN\\\"}}}"
+#define CF_OPTS "{\"untrusted\": true, \"to\": \"plain\", \"citeproc\": true, \"citeproc-files\": "
+/* the canary: files on the disk, of names a document may give */
+#define CF_MARK "CANARY-CITEPROC-FILES-5e1b"
+
+static int clean(const pandoc_result *r)
+{
+    return r && !has(r->output, CF_MARK) && !has(r->error_message, CF_MARK) && !has(r->log, CF_MARK);
+}
+
+static void citeproc_files(const char *cwd)
+{
+    make_dir("ut-cf");
+    write_file("ut-cf" SEP "refs.bib", "@article{k, title={" CF_MARK "-BIB}, author={Canary, C}, year={1900},"
+               " journal={Long Journal Name}}\n");
+    write_file("ut-cf" SEP "style.csl", "<?xml version='1.0' encoding='utf-8'?><style"
+               " xmlns='http://purl.org/net/xbiblio/csl' class='in-text' version='1.0'><info><title>C</title>"
+               "<id>c</id><updated>2020-01-01T00:00:00+00:00</updated></info><citation><layout>"
+               "<text value='" CF_MARK "-CSL'/></layout></citation></style>\n");
+    write_file("ut-cf" SEP "abbr.json", "{\"default\": {\"container-title\": {\"Long Journal Name\": \""
+               CF_MARK "-ABBR\"}}}\n");
+    char abs_doc[1200];
+    snprintf(abs_doc, sizeof abs_doc, "---\nbibliography: \"%s/ut-cf/refs.bib\"\n---\n[@k]\n", cwd);
+    for (char *p = abs_doc; *p; p++) if (*p == '\\') *p = '/';
+
+    struct { const char *what, *given, *doc; const char *from; const char *expect; } cases[] = {
+        /* given and named: rendered */
+        {"bibliography, CSL style and abbreviations given, named in the metadata: rendered",
+         "{\"refs.bib\": \"" CF_BIB "\", \"style.csl\": \"" CF_CSL "\", \"abbr.json\": \"" CF_ABBR "\"}",
+         "---\nbibliography: ./refs.bib\ncsl: style\ncitation-abbreviations: abbr\n---\n[@k]\n", NULL,
+         "[STYLE Givenness, LJN]"},
+        {"... csl and citation-abbreviations named with their extensions",
+         "{\"refs.bib\": \"" CF_BIB "\", \"style.csl\": \"" CF_CSL "\", \"abbr.json\": \"" CF_ABBR "\"}",
+         "---\nbibliography: refs.bib\ncsl: style.csl\ncitation-abbreviations: abbr.json\n---\n[@k]\n", NULL,
+         "[STYLE Givenness, LJN]"},
+        {"a list of bibliographies, both given",
+         "{\"a.bib\": \"" CF_BIB "\", \"b.bib\": \"@book{j, title={Second}, year={2001}}\"}",
+         "---\nbibliography: [a.bib, b.bib]\n---\n[@k; @j]\n", NULL, "Second"},
+        {"LaTeX's \\bibliography{refs}: refs.bib", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "\\bibliography{refs}\\cite{k}", "latex", "Givenness"},
+        {"a subdirectory's name, as the document gives it", "{\"sub/refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: sub/refs.bib\n---\n[@k]\n", NULL, "Givenness"},
+        /* a name the disk has (the canary) given: the given contents */
+        {"a name the disk has too: the given contents", "{\"ut-cf/refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: ut-cf/refs.bib\n---\n[@k]\n", NULL, "Givenness"},
+        /* names not given: missing, the files on the disk not read */
+        {"a bibliography not given, on the disk: missing", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: ut-cf/refs.bib\n---\n[@k]\n", NULL, NULL},
+        {"... named by its absolute path: missing", "{\"refs.bib\": \"" CF_BIB "\"}", abs_doc, NULL, NULL},
+        {"... through ..: missing", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: ut-cf/../ut-cf/refs.bib\n---\n[@k]\n", NULL, NULL},
+        {"... one of a list: missing", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: [refs.bib, ut-cf/refs.bib]\n---\n[@k]\n", NULL, NULL},
+        {"... LaTeX's \\bibliography: missing", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "\\bibliography{ut-cf/refs}\\cite{k}", "latex", NULL},
+        {"a CSL style not given, on the disk: missing", "{\"refs.bib\": \"" CF_BIB "\"}",
+         "---\nbibliography: refs.bib\ncsl: ut-cf/style\n---\n[@k]\n", NULL, NULL},
+        {"abbreviations not given, on the disk: missing",
+         "{\"refs.bib\": \"" CF_BIB "\", \"style.csl\": \"" CF_CSL "\"}",
+         "---\nbibliography: refs.bib\ncsl: style.csl\ncitation-abbreviations: ut-cf/abbr.json\n---\n[@k]\n",
+         NULL, NULL},
+        {"a name given only without its extension: missing (pandoc looks for style.csl)",
+         "{\"refs.bib\": \"" CF_BIB "\", \"style\": \"" CF_CSL "\"}",
+         "---\nbibliography: refs.bib\ncsl: style\n---\n[@k]\n", NULL, NULL},
+        {"a name on neither: missing", "{}", "---\nbibliography: nowhere.bib\n---\n[@k]\n", NULL, NULL},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        char o[4096];
+        snprintf(o, sizeof o, CF_OPTS "%s%s%s%s}", cases[i].given, cases[i].from ? ", \"from\": \"" : "",
+                 cases[i].from ? cases[i].from : "", cases[i].from ? "\"" : "");
+        pandoc_result *r = convert(o, cases[i].doc);
+        int ok = clean(r) && (cases[i].expect
+            ? r->status == 0 && has(r->output, cases[i].expect)
+            : r->status != 0 && strcmp(r->error_kind, "PandocResourceNotFound") == 0);
+        char what[300];
+        snprintf(what, sizeof what, "citeproc-files: %s", cases[i].what);
+        check(ok, what);
+        if (!ok && r) printf("      %s\n", r->status == 0 ? r->output : r->error_message);
+        pandoc_result_free(r);
+    }
+
+    /* the canary shows when it is read: trusted, without the sandbox */
+    {
+        pandoc_result *r = convert("{\"to\": \"plain\", \"citeproc\": true}",
+                                   "---\nbibliography: ut-cf/refs.bib\n---\n[@k]\n");
+        check(r && r->status == 0 && has(r->output, CF_MARK "-BIB"),
+              "citeproc-files: (the canary shows when read: trusted, without the sandbox)");
+        pandoc_result_free(r);
+    }
+
+    /* malformed: errors */
+    const char *bad[] = {
+        CF_OPTS "[]}", CF_OPTS "\"refs.bib\"}", CF_OPTS "{\"refs.bib\": 1}}", CF_OPTS "{\"refs.bib\": null}}",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        pandoc_result *r = convert(bad[i], "x");
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+              && has(r->error_message, "citeproc-files"), bad[i]);
+        pandoc_result_free(r);
+    }
+    /* not in read_many (readers run no citeproc) */
+    const char *rq = "{\"options\": {\"untrusted\": true, \"citeproc-files\": {}}, \"inputs\": [\"a\"]}";
+    pandoc_result *r = pandoc_read_many(rq, strlen(rq));
+    check(r && r->status != 0 && has(r->error_message, "not allowed for untrusted code: citeproc-files"),
+          "citeproc-files: read_many refuses it");
+    pandoc_result_free(r);
+    /* the options naming files stay refused */
+    r = convert(CF_OPTS "{}, \"bibliography\": [\"refs.bib\"]}", "x");
+    check(r && r->status != 0 && has(r->error_message, "not allowed for untrusted code: bibliography"),
+          "citeproc-files: the option bibliography is still refused");
+    pandoc_result_free(r);
+
+    remove("ut-cf" SEP "refs.bib");
+    remove("ut-cf" SEP "style.csl");
+    remove("ut-cf" SEP "abbr.json");
+    remove_dir("ut-cf");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -324,5 +451,6 @@ int main(void)
     remove_dir(xdg);
 #endif
     untrusted_values();
+    citeproc_files(cwd);
     return failures != 0;
 }

@@ -106,7 +106,8 @@ honoured, by design: the environment is the host's own configuration, not
 something untrusted options choose (the header says what is read from it);
 a host that wants none of it doesn't set it. `citeproc` is
 allowed (1.8), sandboxed as below, with the references in the document's
-metadata. Wasm filters' calls to pandoc are always untrusted. The list is
+metadata, or files given as their contents (`"citeproc-files"`, 1.14:
+below). Wasm filters' calls to pandoc are always untrusted. The list is
 `src/LibPandoc/Untrusted.hs`.
 
 The host writes `"untrusted"` itself, over whatever the code wrote, so
@@ -160,6 +161,25 @@ other file is missing, with a missing file's message, and nothing is
 fetched. So a bibliography given as metadata (`-M`, a metadata file, a
 filter) isn't read either, nor the data directory's `csl/`; name them
 in those options.
+
+Or give them as their contents (1.14): `"citeproc-files": {"refs.bib":
+"@book{...}", "style.csl": "<style ...>"}`, for a caller that reads the
+files itself (a wasm filter running citeproc: its calls to pandoc read no
+file). citeproc finds each as a file of that name, the name the
+document's metadata (or a trusted caller's options) gives, compared as
+pandoc's sandbox does (`refs.bib` serves `./refs.bib` too); nothing is
+read from the disk for them, and a name not given is missing as before,
+also when such a file exists. pandoc's own lookups decide the name: `csl:
+style` looks up `style.csl`, `citation-abbreviations: abbr` looks up
+`abbr.json`, LaTeX's `\bibliography{refs}` looks up `refs.bib`, a
+dependent style's parent `apa.csl` for `.../styles/apa`. It needs the
+sandbox (`"sandbox": true` or `"untrusted"`; else an option error, as
+citeproc would read the disk instead), and untrusted options may give it,
+while their `bibliography`, `csl` and `citation-abbreviations` stay
+refused. A trusted caller's files named in those options are still read
+from the disk, given contents of the same name winning. Not in
+`pandoc_read_many` (an option error). URLs and the data directory's
+`csl/` still find nothing. The header has the rules.
 
 In libpandoc.wasm under a host that opens only some directories to it
 (the bindings' directory sandbox), a path leaving them through `..` or a

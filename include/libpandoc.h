@@ -133,7 +133,7 @@ extern "C" {
  * after pandoc closed standard input; 1.14: "untrusted" may be an object,
  * {"cancel-token": N} giving the host's token, and any value of it but
  * true, false or an object is an error in pandoc_query too (before, a query
- * took it for trusted)).
+ * took it for trusted); "citeproc-files").
  * The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
@@ -286,6 +286,8 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * out). A host that wants none of it doesn't set PANDOC_DATA_DIRS. A host sets
  * "untrusted": true on whatever such code passes (replacing its own
  * "untrusted"), and the list lives here, the same for every host.
+ * citeproc's files can be given as their contents ("citeproc-files",
+ * below), which reads nothing.
  *
  * "untrusted" may also be an object (from 1.14): untrusted, as true, plus
  * what the host itself adds to the code's options, which the code's own
@@ -337,7 +339,41 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * name, never one the document names (its metadata, LaTeX's
  * \bibliography), nor one named as metadata ("metadata", metadata files,
  * filters), nor the data directory's styles; any other file or URL is
- * missing, with the message a missing file gets, and nothing is fetched. */
+ * missing, with the message a missing file gets, and nothing is fetched.
+ *
+ * "citeproc-files": {"NAME": "TEXT", ...} (libpandoc's, from 1.14): files
+ * for that sandboxed citeproc, given as their contents, for a caller that
+ * reads them itself (a wasm filter, whose calls to pandoc read no file). It
+ * needs the sandbox ("sandbox": true, or "untrusted"; without it, a
+ * PandocOptionError: pandoc's citeproc would read the disk and ignore
+ * them), and untrusted options may give it. citeproc then finds each as
+ * the file NAME, though nothing is read from the disk for it; a name not
+ * given is missing as above, also when a file of that name exists. TEXT is
+ * a JSON string (the file as UTF-8); any other value, or a "citeproc-files"
+ * that isn't an object, is a PandocOptionError. A trusted caller's
+ * "bibliography", "csl" and "citation-abbreviations" are still read from
+ * the disk; given contents of the same name win. It changes nothing but
+ * citeproc's files (citeproc run as the option "citeproc" or the filter
+ * "citeproc"; not a Lua filter's pandoc.utils.citeproc). NAME is what
+ * citeproc looks up, compared as pandoc's sandbox compares names (after
+ * dropping "." and "dir/.."):
+ *   - a bibliography: the name the metadata gives. "refs.bib" serves
+ *     refs.bib, ./refs.bib and sub/../refs.bib; "sub/refs.bib" and
+ *     "../refs.bib" serve those; an absolute path serves itself (and its
+ *     file: URL). Each of a list is looked up alone. LaTeX's
+ *     \bibliography{refs} and \addbibresource{refs.bib} look up "refs.bib"
+ *     (the reader adds .bib). The format is the name's extension (.bib,
+ *     .json, .yaml, .ris, ...): a name without one fails ("Could not
+ *     determine bibliography format"), as on the disk.
+ *   - "csl" (or "citation-style") and "citation-abbreviations": a name
+ *     without a dot gets ".csl" and ".json": csl: style looks up
+ *     "style.csl" (given as "style", it is missing); csl: style.csl looks
+ *     up "style.csl". A dependent style's parent is looked up as the last
+ *     part of its URL plus ".csl" (.../styles/apa: "apa.csl").
+ * What doesn't work: a URL (nothing is fetched), styles in a data
+ * directory's csl/ (looked up by the data directory's path; an untrusted
+ * call's is a temporary directory of its own), a name pandoc doesn't look up
+ * (above: "style" for csl: style). */
 LIBPANDOC_API pandoc_result *pandoc_convert(const char *options, size_t options_len,
                                             const char *input, size_t input_len);
 
@@ -506,8 +542,10 @@ LIBPANDOC_API int pandoc_main(int argc, const char *const *argv,
  * the reading options that read no files (not data-dir, resource-path,
  * abbreviations), for untrusted code; the abbreviations are then pandoc's
  * own, or PANDOC_DATA_DIRS's (as for pandoc_convert). "untrusted" may be
- * an object there too, {"cancel-token": N} (from 1.14). Each text is
- * prepared as pandoc prepares its input (tabs expanded unless
+ * an object there too, {"cancel-token": N} (from 1.14). "citeproc-files"
+ * is pandoc_convert's only (readers run no citeproc): here an unknown
+ * option, and refused for untrusted code, both a PandocOptionError. Each
+ * text is prepared as pandoc prepares its input (tabs expanded unless
  * preserve-tabs, carriage returns dropped).
  *
  * "timeout" in "options" (from 1.10), as for pandoc_convert, is the whole

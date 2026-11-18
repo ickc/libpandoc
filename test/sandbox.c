@@ -1,7 +1,8 @@
 /* "sandbox": true and citeproc: citeproc reads only the bibliography, CSL
  * style and abbreviations the caller names in the options, never what a
  * document names, and fetches nothing. The secrets are canary files this
- * test writes (and removes) in the current directory.
+ * test writes (and removes) in the current directory. And (1.14) files
+ * given as their contents ("citeproc-files"), with the options' files.
  *
  *   cc test/sandbox.c -Idist/include -Ldist/lib -lpandoc -pthread && ./a.out
  *
@@ -289,6 +290,51 @@ int main(void)
     for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
         r = convert(refused[i], "a");
         check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0, refused[i]);
+        pandoc_result_free(r);
+    }
+
+    /* files given as their contents (1.14), for a trusted caller with the
+     * sandbox: with the options' own, read from the disk */
+    {
+#define GIVEN_BIB "@book{given, title={Givenness}, author={Giver, Gil}, year={2003}}"
+#define GIVEN_CSL "<?xml version='1.0' encoding='utf-8'?><style xmlns='http://purl.org/net/xbiblio/csl'" \
+    " class='in-text' version='1.0'><info><title>T</title><id>t</id>" \
+    "<updated>2020-01-01T00:00:00+00:00</updated></info><citation><layout prefix='[STYLE ' suffix=']'" \
+    " delimiter='; '><text variable='title'/></layout></citation></style>"
+        r = convert(SANDBOX ", \"citeproc-files\": {\"given.bib\": \"" GIVEN_BIB "\"}}",
+                    "---\nbibliography: given.bib\n---\n\nText [@given].\n");
+        check(r && r->status == 0 && has(r->output, "Givenness"),
+              "sandbox, citeproc-files: a bibliography given, named in the metadata");
+        pandoc_result_free(r);
+        r = convert(SANDBOX ", \"bibliography\": [\"sbx/refs.bib\"], \"citeproc-files\": {\"style.csl\": \""
+                    GIVEN_CSL "\"}}", "---\ncsl: style.csl\n---\n\nText [@mine].\n");
+        check(r && r->status == 0 && has(r->output, "[STYLE Caller"),
+              "sandbox, citeproc-files: ... a style given, with the options' bibliography from the disk");
+        if (r && r->status == 0) printf("      %s", r->output);
+        pandoc_result_free(r);
+        r = convert(SANDBOX ", \"bibliography\": [\"sbx/refs.bib\"], \"citeproc-files\": {\"sbx/refs.bib\": \""
+                    GIVEN_BIB "\"}}", "Text [@given].\n");
+        check(r && r->status == 0 && has(r->output, "Givenness") && !has(r->output, "Caller"),
+              "sandbox, citeproc-files: ... a name the options name too: the given contents");
+        pandoc_result_free(r);
+        r = convert(SANDBOX ", \"citeproc-files\": {\"given.bib\": \"" GIVEN_BIB "\"}}", named[0].doc);
+        check(r && r->status != 0 && clean(r) && strcmp(r->error_kind, "PandocResourceNotFound") == 0,
+              "sandbox, citeproc-files: a document's file not given is still not read");
+        pandoc_result_free(r);
+        const char *nosandbox[] = {
+            "{\"to\": \"plain\", \"citeproc\": true, \"citeproc-files\": {}}",
+            "{\"to\": \"plain\", \"citeproc\": true, \"sandbox\": false, \"citeproc-files\": {}}",
+        };
+        for (int i = 0; i < 2; i++) {
+            r = convert(nosandbox[i], "x");
+            check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+                  && has(r->error_message, "needs pandoc's sandbox"), nosandbox[i]);
+            pandoc_result_free(r);
+        }
+        const char *rq = "{\"options\": {\"sandbox\": true, \"citeproc-files\": {}}, \"inputs\": [\"a\"]}";
+        r = pandoc_read_many(rq, strlen(rq));
+        check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+              && has(r->error_message, "citeproc-files"), "read_many: citeproc-files is an option error");
         pandoc_result_free(r);
     }
 

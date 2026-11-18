@@ -150,7 +150,9 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   go to the libpandoc.wasm it runs in (or the one given as `{ pandoc }`),
   marked `"untrusted": true`: libpandoc then allows pandoc's sandbox only, and no
   options that read or write files, fetch resources or run programs (the
-  list every host shares, in `LibPandoc.Untrusted`).
+  list every host shares, in `LibPandoc.Untrusted`). A filter running
+  citeproc on files it reads itself gives them as their contents,
+  `"citeproc-files"` (1.14; the header), as pandoc reads no file for it.
   The same `"untrusted": true` works in `convert`'s options for untrusted
   documents or options in general.
   `{ maxMemory }` (bytes; in Node, by default `$LIBPANDOC_WASM_MAX_MEMORY`,
