@@ -181,24 +181,21 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
   let parsed = do
         v0 <- Aeson.eitherDecodeStrict json
         (limit, v1) <- timeLimit v0
+        (isUntrusted, v2) <- untrusted Convert v1
         -- untrusted code doesn't read the process's stdin
-        when (isUntrusted v1 && isNothing input) $
+        when (isUntrusted && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
-        -- (after untrusted, which refuses a cancel token)
-        (token, v) <- cancelToken =<< untrusted Convert v1
-        v' <- callbackFilters (fromIntegral nFilters) v
-        (,,,) limit token (isUntrusted v1) <$> Aeson.parseEither Aeson.parseJSON v'
+        -- (after untrusted, which refuses the code's own cancel token and
+        -- adds the host's)
+        (token, v3) <- cancelToken v2
+        v4 <- callbackFilters (fromIntegral nFilters) v3
+        (,,,) limit token isUntrusted <$> Aeson.parseEither Aeson.parseJSON v4
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
     Right (limit, token, noUserData, f :: Opt -> Opt) -> do
       cs <- cancelScope token
       limited limit $ cancellable cs $
         convert (withHooks cs filters (fromIntegral nFilters)) noUserData (f defaultOpts) input
-
--- | Options with @"untrusted": true@ ("LibPandoc.Untrusted").
-isUntrusted :: Aeson.Value -> Bool
-isUntrusted (Aeson.Object o) = KM.lookup "untrusted" o == Just (Aeson.Bool True)
-isUntrusted _ = False
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -439,7 +436,7 @@ hsReadMany ptr len = respond $ do
         (optsV, o) <- flip Aeson.parseEither v $ Aeson.withObject "read_many request" $ \o ->
           (\opts -> (fromMaybe (Aeson.object []) opts, o)) <$> o Aeson..:? "options"
         (limit, optsV1) <- timeLimit optsV
-        (token, optsV') <- cancelToken =<< untrusted ReadMany optsV1
+        (token, optsV') <- cancelToken . snd =<< untrusted ReadMany optsV1
         flip Aeson.parseEither optsV' $ \_ -> do
           f <- Aeson.parseJSON optsV'
           inputs <- o Aeson..: "inputs"

@@ -4,6 +4,9 @@
  * the user data directory (U) and in a directory of PANDOC_DATA_DIRS (P),
  * files this test writes (and removes) under the current directory.
  *
+ * Also (1.14): "untrusted" as an object, which is untrusted too, and
+ * malformed values, which are errors (never trusted).
+ *
  *   cc test/untrusted.c -Idist/include -Ldist/lib -lpandoc && ./a.out
  *
  * PANDOC_DATA_DIRS (pandoc 3.14) is honoured by design: it is the host's
@@ -116,6 +119,68 @@ static void set_env(const char *k, const char *v) { _putenv_s(k, v); }
 #else
 static void set_env(const char *k, const char *v) { setenv(k, v, 1); }
 #endif
+
+/* "untrusted" (1.14): an object is untrusted too; anything but true, false
+ * or an object is an error, never trusted. (Its "cancel-token": cancel.c.) */
+static void untrusted_values(void)
+{
+    pandoc_result *r = convert("{\"untrusted\": {}, \"to\": \"html\"}", "*x*");
+    check(r && r->status == 0 && strcmp(r->output, "<p><em>x</em></p>\n") == 0,
+          "\"untrusted\": {} converts");
+    pandoc_result_free(r);
+    r = convert("{\"untrusted\": {}, \"template\": \"t.html\"}", "x");
+    check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+          && has(r->error_message, "not allowed for untrusted code: template"),
+          "\"untrusted\": {} is untrusted: it refuses a template");
+    show(r);
+    pandoc_result_free(r);
+    r = convert("{\"untrusted\": {\"sandbox\": false}}", "x");
+    check(r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+          && has(r->error_message, "unknown field \"sandbox\""),
+          "\"untrusted\": an unknown field is an error naming it");
+    show(r);
+    pandoc_result_free(r);
+    const char *bad[] = {"\"yes\"", "\"true\"", "1", "0", "null", "[]", "[true]"};
+    int all = 1;
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        char o[128];
+        snprintf(o, sizeof o, "{\"untrusted\": %s, \"template\": \"t.html\"}", bad[i]);
+        r = convert(o, "x");
+        all = all && r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+              && has(r->error_message, "\"untrusted\" is true, false or an object");
+        pandoc_result_free(r);
+        snprintf(o, sizeof o, "{\"options\": {\"untrusted\": %s}, \"inputs\": [\"a\"]}", bad[i]);
+        r = pandoc_read_many(o, strlen(o));
+        all = all && r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0;
+        pandoc_result_free(r);
+        snprintf(o, sizeof o, "{\"query\": \"default-template\", \"format\": \"html\", \"untrusted\": %s}", bad[i]);
+        r = pandoc_query(o, strlen(o));
+        all = all && r && r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0;
+        pandoc_result_free(r);
+    }
+    check(all, "\"untrusted\" of another type: an error in convert, read_many and query");
+    const char *rq = "{\"options\": {\"untrusted\": {}, \"data-dir\": \".\"}, \"inputs\": [\"a\"]}";
+    r = pandoc_read_many(rq, strlen(rq));
+    check(r && r->status != 0 && has(r->error_message, "not allowed for untrusted code: data-dir"),
+          "read_many: \"untrusted\": {} refuses data-dir");
+    pandoc_result_free(r);
+    struct { const char *q; int ok; const char *message; } qs[] = {
+        {"{\"query\": \"version\", \"untrusted\": {}}", 1, NULL},
+        {"{\"query\": \"default-template\", \"format\": \"html\", \"untrusted\": {}}", 0,
+         "query not allowed for untrusted code"},
+        {"{\"query\": \"version\", \"untrusted\": {\"cancel-token\": 1}}", 0, "takes no \"cancel-token\""},
+        {"{\"query\": \"version\", \"untrusted\": {\"x\": 1}}", 0, "unknown field \"x\""},
+        {"{\"query\": \"default-template\", \"format\": \"html\", \"untrusted\": false}", 1, NULL},
+    };
+    for (size_t i = 0; i < sizeof qs / sizeof *qs; i++) {
+        r = pandoc_query(qs[i].q, strlen(qs[i].q));
+        check(r && (qs[i].ok ? r->status == 0
+                             : r->status != 0 && strcmp(r->error_kind, "PandocOptionError") == 0
+                               && has(r->error_message, qs[i].message)), qs[i].q);
+        show(r);
+        pandoc_result_free(r);
+    }
+}
 
 int main(void)
 {
@@ -258,5 +323,6 @@ int main(void)
 #ifndef _WIN32
     remove_dir(xdg);
 #endif
+    untrusted_values();
     return failures != 0;
 }
