@@ -276,6 +276,15 @@ int main(void)
     r = convert(ut, named[0].doc);
     check(r && r->status != 0 && clean(r), "untrusted: citeproc reads no bibliography a document names");
     pandoc_result_free(r);
+    /* (1.15) and named among the filters, so that it can run after the
+     * include step ("citeproc": true puts it first): the same citeproc */
+    const char *ut_f = "{\"untrusted\": true, \"to\": \"plain\", \"filters\": [\"panclude\", \"citeproc\"]}";
+    r = convert(ut_f, "---\nreferences: [{id: x, title: Inline Title, type: book}]\n---\n\nText [@x].\n");
+    check(r && r->status == 0 && has(r->output, "Inline Title"), "untrusted: citeproc among the filters runs");
+    pandoc_result_free(r);
+    r = convert(ut_f, named[0].doc);
+    check(r && r->status != 0 && clean(r), "untrusted: ... and reads no bibliography a document names");
+    pandoc_result_free(r);
     const char *ut_meta = "{\"untrusted\": true, \"to\": \"plain\", \"citeproc\": true,"
                           " \"metadata\": {\"bibliography\": \"sbx-out.bib\", \"nocite\": \"@*\"}}";
     r = convert(ut_meta, "Text.\n");
@@ -285,7 +294,8 @@ int main(void)
         "{\"untrusted\": true, \"citeproc\": true, \"bibliography\": [\"sbx/refs.bib\"]}",
         "{\"untrusted\": true, \"citeproc\": true, \"csl\": \"sbx-out.csl\"}",
         "{\"untrusted\": true, \"citeproc\": true, \"citation-abbreviations\": \"sbx-out.json\"}",
-        "{\"untrusted\": true, \"filters\": [\"citeproc\"]}",
+        "{\"untrusted\": true, \"filters\": [{\"type\": \"citeproc\"}]}",
+        "{\"untrusted\": true, \"filters\": [\"citeproc\", \"x.lua\"]}",
     };
     for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
         r = convert(refused[i], "a");
