@@ -131,10 +131,11 @@ export function nodeDirectory(path, name = path) {
  *  (the real one too, if a link leads to it; on Windows C:\x as /c/x) and
  *  under its path relative to `cwd` (".", "..", "../common", "img"; none
  *  on another Windows drive); and `cwd` as "." when it lies inside one of
- *  them. wasi-libc matches the beginning of a path against these names as
- *  written, without normalising: ../common/x and here.txt work,
- *  ./../common/x and img/../../common/x don't. Throws, naming it, for one
- *  that doesn't exist or isn't a directory. */
+ *  them. The filter's own libc (wasi-libc) matches the beginning of a path
+ *  against these names, without normalising: ../common/x and here.txt
+ *  work, img/../../common/x doesn't, and a leading ./ (./../common/x) only
+ *  in some builds of a filter (a Rust one: not with lto = true). Throws,
+ *  naming it, for one that doesn't exist or isn't a directory. */
 export function hostPreopens(dirs, cwd = process.cwd()) {
   const realCwd = realpathSync(cwd);
   const named = new Map();
