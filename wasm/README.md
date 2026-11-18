@@ -148,13 +148,25 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   absolute path (on Windows `C:\x` as `/c/x`) and under its path relative
   to the working directory (`.`, `..`, `../common`, `img`), and the working
   directory as `.` when it lies inside one, so that `../common/part.txt`,
-  `here.txt` and the absolute name work as for a native filter. wasi-libc
-  matches the beginning of a path against those names as written, without
-  normalising it: `./../common/x` and `img/../../common/x` don't work, nor
-  `./img/x` when only `img` is given. `wasmFilter`'s `preopens` (also
+  `here.txt` and the absolute name work as for a native filter. The
+  filter's own libc (wasi-libc) matches the beginning of a path against
+  those names, without normalising it: `img/../../common/x` doesn't work,
+  and a leading `./` is not to be relied on (`./../common/x`; `./img/x`
+  when only `img` is given): the same Rust filter drops it built without
+  link-time optimisation, and keeps it, so fails, built with `lto = true`.
+  A symbolic link is refused when it leaves the directory its name is
+  opened through, even into another one given. `wasmFilter`'s `preopens` (also
   `[]`) replaces the variable; `node-dir.mjs`'s `hostPreopens(dirs)` makes
   them as the variable does. A filter that fails with no directory says
-  so: `(it was given no directory: LIBPANDOC_WASM_DIRS)`. The same file runs
+  so: `(it was given no directory: LIBPANDOC_WASM_DIRS)`. What a filter
+  returns is a document pandoc then writes, with the directories the
+  instance itself was given (`load`'s `preopens`): a filter given none
+  still reaches a file there through an image it names (HTML with
+  `embed-resources`, docx), so give an instance that runs a filter not
+  trusted only what the document may read. And a filter that reads files
+  reads what the document asks for, within its directories: when the
+  document isn't trusted either, give the filter no more than the
+  instance. The same file runs
   in pandocrs (libpandoc-rs, wasmtime). Tested in Node
   (`test-wasm-filter.mjs`) and in browsers (`WASM_FILTERS=... node
   wasm/test-browser.mjs`: Chromium 153, Firefox 155, WebKit 26.6).
