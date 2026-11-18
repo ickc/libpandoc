@@ -120,8 +120,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
 
   **The switch:** `{ separateFilters: true }` (convertWithFilters' and
   main's last argument, beside `raw` and `bytes`) makes every function its
-  own exchange (as before this change), so that pandoc reads and checks
-  the document between any two. By default, in Node, it is
+  own exchange, so that pandoc reads and checks the document between any
+  two. By default, in Node, it is
   `$LIBPANDOC_SEPARATE_FILTERS`: `1` on; unset, empty or `0` off; anything
   else a `TypeError` naming the variable and the value (a safety switch is
   not to be ignored); `separateFilters` given wins over it. In a browser,
