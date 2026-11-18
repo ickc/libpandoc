@@ -34,7 +34,9 @@ per reader (a sample written by the writer of the same name).
 - Options: real keys with values of the right type, the wrong one, null,
   huge strings, deep arrays, odd numbers, invalid UTF-8; unknown and
   repeated keys; garbage instead of JSON. `"untrusted"` and `"sandbox"` on,
-  off or wrong; `"timeout"` mostly set (always with a hostile document).
+  off or wrong (`"untrusted"` also `{}`, 1.14); `"timeout"` mostly set
+  (always with a hostile document); `"citeproc-files"` (1.14) now and then,
+  giving text for one of the canary's names, or a wrong value.
 - Documents: random bytes, mutations of the valid ones, splices, the
   review's hostile inputs (nested quotes, links, lists, tables, Typst
   loops, deep JSON, ...), documents naming a canary's files (LaTeX
@@ -44,7 +46,8 @@ per reader (a sample written by the writer of the same name).
   random bytes, deep JSON, nothing, or fail; or call pandoc again.
 - Cancel tokens (1.13): a quarter of the conversions and `read_many`
   calls get one, which another thread cancels (or frees, or leaves) after
-  up to 0.8 s.
+  up to 0.8 s; a fifth of those inside `"untrusted"`, as the host's
+  (1.14).
 - A canary: files, and a user data directory (`HOME`, `XDG_DATA_HOME`) with
   templates and translations, whose content must never come out of an
   untrusted call.
@@ -91,6 +94,12 @@ Lua's "not enough memory" panic), kept apart so it buries nothing.
 Then 20 minutes against the fixes (2,706 children, 517,006 calls): no
 SIGPIPE crash, no NUL violation; the `<q` violation again, and one Lua
 memory panic (now counted as oom).
+
+Then 10 minutes against 1.14 (2026-11-18, the new shapes: `"untrusted": {}`
+and `{"cancel-token": N}`, `"citeproc-files"`): 533 children, 99,994
+calls; no violation, crash or canary opened; 5 hangs (calls with no time
+limit on inputs pandoc's readers are slow on, and an untrusted call to
+the muse writer past its `"timeout"`, as above) and 48 oom.
 
 Most hangs are calls that can have no time limit (`pandoc_convert_args`,
 `pandoc_main`, `read_many` without options) on inputs that pandoc's readers

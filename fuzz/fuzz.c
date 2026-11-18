@@ -792,14 +792,23 @@ static void gen_options(rng *r, buf *b, int call, const char *from, int hostile,
         KEY("timeout");
         gen_value(r, b, "n", 0);
     }
-    if (token && chance(r, 95)) {
+    if (call == 0 && chance(r, 10)) { /* citeproc's files as contents (1.14), some the canary's names */
+        KEY("citeproc-files");
+        if (chance(r, 90)) bfmt(b, "{\"%s/bib.bib\":\"@book{key, title={Given}, year={2000}}\",\"refs.bib\":\"@book{key}\","
+                                "\"style.csl\":\"<style/>\"}", canary);
+        else gen_value(r, b, "o", 0);
+    }
+    /* the host's token inside "untrusted" (1.14) */
+    int host = token && chance(r, 20);
+    if (token && !host && chance(r, 95)) {
         KEY("cancel-token");
         if (chance(r, 95)) bfmt(b, "%lld", (long long)token), oi->token = token;
         else gen_value(r, b, "n", 0), oi->token = -1;
     }
-    if (untrusted_only || chance(r, 30)) {
+    if (host || untrusted_only || chance(r, 30)) {
         KEY("untrusted");
-        bstr(b, "true");
+        if (host) bfmt(b, "{\"cancel-token\":%lld}", (long long)token), oi->token = token;
+        else bstr(b, chance(r, 80) ? "true" : "{}");
         oi->untrusted = !dup;
     } else if (chance(r, 5)) {
         KEY("untrusted");
