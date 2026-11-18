@@ -169,6 +169,190 @@ test("a failing filter fails the conversion", () => {
                 (e) => e.kind === "PandocFilterError" && /boom/.test(e.message));
 });
 
+// Consecutive JS functions are one exchange with pandoc: what one returns is
+// what the next is given. A Lua filter between two makes two.
+const noop = "/tmp/noop.lua";
+writeFileSync(join(pandoc.tmp, "noop.lua"), "return {}");
+const para = (text) => ({ t: "Para", c: [{ t: "Str", c: text }] });
+// the options running fns[0], fns[1], ... with Lua's no-op between each
+const apart = (options, fns) => ({ ...options, filters: fns.flatMap((_, i) => i ? [noop, cb(i)] : [cb(i)]) });
+const cb = (index) => ({ type: "callback", index });
+
+test("consecutive JS filters give what they give apart", () => {
+  const fns = [
+    (doc) => { doc.blocks.push(para("two")); return doc; },
+    (doc) => ({ ...doc, blocks: [...doc.blocks, para("three")] }),
+    (doc, ctx) => { doc.blocks.push(para(ctx.format)); return doc; },
+  ];
+  const options = { from: "markdown", to: "plain" };
+  const together = pandoc.convertWithFilters(options, "one", fns);
+  assert.equal(together, "one\n\ntwo\n\nthree\n\nplain\n");
+  assert.equal(pandoc.convertWithFilters(apart(options, fns), "one", fns), together);
+});
+
+test("a run of JS filters is one exchange: the next is given what the one before returned", () => {
+  const given = [];
+  const fns = [0, 1, 2].map(() => (doc) => { given.push(doc); return doc; });
+  pandoc.convertWithFilters({ to: "plain" }, "x", fns);
+  assert.ok(given[0] === given[1] && given[1] === given[2]);
+  given.length = 0;
+  pandoc.convertWithFilters(apart({ to: "plain" }, fns), "x", fns);
+  assert.ok(given[0] !== given[1] && given[1] !== given[2]);
+  // the filters option may name a function twice, in any order
+  given.length = 0;
+  const order = [];
+  const named = [0, 1].map((i) => (doc) => { order.push(i); given.push(doc); return doc; });
+  pandoc.convertWithFilters({ to: "plain", filters: [cb(1), cb(0), cb(1)] }, "x", named);
+  assert.deepEqual(order, [1, 0, 1]);
+  assert.ok(given[0] === given[1] && given[1] === given[2]);
+  // each is given a context of its own
+  const formats = [];
+  const ctxs = [0, 1].map(() => (doc, ctx) => { formats.push(ctx.format); ctx.format = "changed"; return doc; });
+  pandoc.convertWithFilters({ to: "plain" }, "x", ctxs);
+  assert.deepEqual(formats, ["plain", "plain"]);
+});
+
+test("a run ends at a Lua filter: typed, Lua, typed, typed is two callbacks, in order", () => {
+  const given = [];
+  const fns = ["b", "c", "d"].map((s) => (doc) => { given.push(doc); doc.blocks.push(para(s)); return doc; });
+  writeFileSync(join(pandoc.tmp, "upper.lua"), "function Str(e) return pandoc.Str(e.text:upper()) end");
+  const out = pandoc.convertWithFilters({ to: "plain", filters: [cb(0), "/tmp/upper.lua", cb(1), cb(2)] }, "a", fns);
+  assert.equal(out, "A\n\nB\n\nc\n\nd\n");
+  assert.ok(given[0] !== given[1] && given[1] === given[2]);
+});
+
+// raw functions and functions marked `bytes` (a wasm filter's) run in a
+// run too: what one writes is the next one's input, unchecked
+const bytesFn = (f) => Object.assign((doc, ctx) => f(new TextDecoder().decode(doc), ctx), { bytes: true });
+const sortedMeta = (text) => JSON.stringify({ ...JSON.parse(text), meta: { b: { t: "MetaBool", c: true }, a: { t: "MetaBool", c: true } } });
+
+test("a mixed run (plain, bytes, plain, bytes) keeps the order and gives what it gives apart", () => {
+  const order = [];
+  const fns = [
+    (doc) => { order.push(0); doc.blocks.push(para("p0")); return doc; },
+    bytesFn((text) => { order.push(1); return text.replace('"p0"', '"b1"'); }),
+    (doc) => { order.push(2); doc.blocks.push(para("p2")); return doc; },
+    bytesFn((text) => { order.push(3); return text.replace('"p2"', '"b3"'); }),
+  ];
+  const together = pandoc.convertWithFilters({ to: "plain" }, "x", fns);
+  assert.equal(together, "x\n\nb1\n\nb3\n");
+  assert.equal(pandoc.convertWithFilters({ to: "plain" }, "x", fns, { separateFilters: true }), together);
+  assert.deepEqual(order, [0, 1, 2, 3, 0, 1, 2, 3]);
+});
+
+test("in a run, what a raw or bytes function wrote is the next one's input, unchecked", () => {
+  // as written: the metadata's keys in the filter's order (pandoc writes
+  // them sorted)
+  let keys;
+  const raw = [sortedMeta, (text) => { keys = Object.keys(JSON.parse(text).meta); return text; }];
+  pandoc.convertWithFilters({ to: "plain" }, "x", raw, { raw: true });
+  assert.deepEqual(keys, ["b", "a"]);
+  pandoc.convertWithFilters({ to: "plain" }, "x", raw, { raw: true, separateFilters: true });
+  assert.deepEqual(keys, ["a", "b"]);
+  // a document pandoc would refuse, repaired by the next: chained it goes
+  // through; apart pandoc refuses it after the first
+  const repaired = [
+    (text) => text.replace(/"blocks":\[.*\]/, '"blocks":[{"t":"Nonsense"}]'),
+    (text) => text.replace('{"t":"Nonsense"}', '{"t":"Para","c":[{"t":"Str","c":"fine"}]}'),
+  ];
+  assert.equal(pandoc.convertWithFilters({ to: "plain" }, "x", repaired, { raw: true }), "fine\n");
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain" }, "x", repaired, { raw: true, separateFilters: true }),
+                (e) => e.kind === "PandocFilterError" && /Nonsense/.test(e.message));
+  // not JSON, then a function that parses it: the error names both
+  const notJson = [bytesFn(() => "not JSON"), (doc) => doc];
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain" }, "x", notJson),
+                (e) => e.kind === "PandocFilterError" && /fns\[1\]: .*JSON/.test(e.message)
+                  && /\(its input is what fns\[0\] wrote, unchecked: LIBPANDOC_SEPARATE_FILTERS=1 has pandoc check it\)/.test(e.message));
+  // apart, pandoc refuses it after the first, naming no other
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain" }, "x", notJson, { separateFilters: true }),
+                (e) => e.kind === "PandocFilterError" && !/its input is what/.test(e.message));
+  // a raw or bytes function failing on such input: the same hint
+  const fails = [() => "not JSON", (text) => JSON.parse(text)];
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain" }, "x", fails, { raw: true }),
+                (e) => /fns\[1\]: .*\(its input is what fns\[0\] wrote, unchecked/.test(e.message));
+  // the final document is pandoc's to check, as always
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain" }, "x", [() => "not JSON", (t) => t], { raw: true }),
+                (e) => e.kind === "PandocFilterError");
+});
+
+test("separateFilters, and LIBPANDOC_SEPARATE_FILTERS: each filter its own exchange", () => {
+  const given = [];
+  const fns = [0, 1].map(() => (doc) => { given.push(doc); return doc; });
+  const same = (opts) => {
+    given.length = 0;
+    pandoc.convertWithFilters({ to: "plain" }, "x", fns, opts);
+    return given[0] === given[1];
+  };
+  const env = process.env.LIBPANDOC_SEPARATE_FILTERS;
+  try {
+    for (const v of [undefined, "", "0"]) {
+      if (v === undefined) delete process.env.LIBPANDOC_SEPARATE_FILTERS;
+      else process.env.LIBPANDOC_SEPARATE_FILTERS = v;
+      assert.equal(same(), true, `LIBPANDOC_SEPARATE_FILTERS=${v}`);
+      assert.equal(same({ separateFilters: true }), false);
+    }
+    process.env.LIBPANDOC_SEPARATE_FILTERS = "1";
+    assert.equal(same(), false);
+    assert.equal(same({ separateFilters: false }), true); // the API's value wins
+    for (const v of ["yes", "true", " 1"]) {
+      process.env.LIBPANDOC_SEPARATE_FILTERS = v;
+      assert.throws(() => same(), (e) => e instanceof TypeError && e.message.includes("LIBPANDOC_SEPARATE_FILTERS")
+                    && e.message.includes(JSON.stringify(v)));
+      assert.equal(same({ separateFilters: false }), true);
+    }
+  } finally {
+    if (env === undefined) delete process.env.LIBPANDOC_SEPARATE_FILTERS;
+    else process.env.LIBPANDOC_SEPARATE_FILTERS = env;
+  }
+  assert.throws(() => same({ separateFilters: "yes" }), (e) => e instanceof TypeError && /separateFilters/.test(e.message));
+  // an index naming no function is refused before the call
+  assert.throws(() => pandoc.convertWithFilters({ to: "plain", filters: [cb(2)] }, "x", fns),
+                (e) => e instanceof TypeError && /index" below 2/.test(e.message));
+});
+
+test("in a run, the next filter sees what the one before left, not what pandoc would make of it", () => {
+  // the metadata's keys in the order the filter put them (pandoc writes
+  // them sorted)
+  const keys = [];
+  const fns = [
+    (doc) => { doc.meta = { b: { t: "MetaBool", c: true }, a: { t: "MetaBool", c: true } }; return doc; },
+    (doc) => { keys.push(Object.keys(doc.meta)); return doc; },
+  ];
+  pandoc.convertWithFilters({ to: "plain" }, "x", fns);
+  pandoc.convertWithFilters(apart({ to: "plain" }, fns), "x", fns);
+  assert.deepEqual(keys, [["b", "a"], ["a", "b"]]);
+  // a node put in twice is one object: changed in place, it changes in both
+  // places (apart, pandoc wrote two copies)
+  const shared = [
+    (doc) => { const p = para("x"); doc.blocks = [p, p]; return doc; },
+    (doc) => { doc.blocks[0].c[0].c = "y"; return doc; },
+  ];
+  assert.equal(pandoc.convertWithFilters({ to: "plain" }, "", shared), "y\n\ny\n");
+  assert.equal(pandoc.convertWithFilters(apart({ to: "plain" }, shared), "", shared), "y\n\nx\n");
+  // a document pandoc would refuse is refused at the end of the run, not
+  // after the filter that made it: a later filter can repair it
+  const repaired = [
+    (doc) => { doc.blocks = [{ t: "Nonsense" }]; return doc; },
+    (doc) => { doc.blocks = [para("fine")]; return doc; },
+  ];
+  assert.equal(pandoc.convertWithFilters({ to: "plain" }, "x", repaired), "fine\n");
+  assert.throws(() => pandoc.convertWithFilters(apart({ to: "plain" }, repaired), "x", repaired),
+                (e) => e.kind === "PandocFilterError" && /Nonsense/.test(e.message));
+});
+
+test("the filter of a run that failed is named, and those after it don't run", () => {
+  let after = false;
+  const fns = [(doc) => doc, () => { throw new Error("boom"); }, (doc) => { after = true; return doc; }];
+  assert.throws(() => pandoc.convertWithFilters({ to: "html" }, "x", fns),
+                (e) => e.kind === "PandocFilterError" && /fns\[1\]: boom/.test(e.message));
+  assert.equal(after, false);
+  for (const [fn, message] of [[() => undefined, /fns\[1\]: the filter returned no document/],
+                               [async (d) => d, /fns\[1\]: the filter returned a Promise/]]) {
+    assert.throws(() => pandoc.convertWithFilters({ to: "html" }, "x", [(doc) => doc, fn]),
+                  (e) => e.kind === "PandocFilterError" && message.test(e.message));
+  }
+});
+
 test("command-line arguments, and binary output", () => {
   const [status, out] = pandoc.abi.convertArgs(["-f", "markdown", "-t", "html"], "*hi*");
   assert.equal(status, 0);

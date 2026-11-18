@@ -33,6 +33,52 @@ function cBytes(s, what) {
   return utf8.encode(s + "\0");
 }
 
+// Whether each filter is its own exchange with pandoc: `given` (true or
+// false), else $LIBPANDOC_SEPARATE_FILTERS where there is a process
+// environment (Node): 1 yes; unset, empty or 0 no; anything else an error,
+// as a safety switch is not to be ignored.
+function separate(given) {
+  if (given !== undefined) {
+    if (typeof given !== "boolean") throw new InputError(`separateFilters: true or false, not ${typeof given}`);
+    return given;
+  }
+  const v = globalThis.process?.env?.LIBPANDOC_SEPARATE_FILTERS;
+  if (v === undefined || v === "" || v === "0") return false;
+  if (v === "1") return true;
+  throw new InputError(`LIBPANDOC_SEPARATE_FILTERS: 1 (each filter its own exchange with pandoc), or 0 or empty, not ${JSON.stringify(v)}`);
+}
+
+// The "filters" entries with each run of consecutive ones naming a function
+// (by its index, below n) as one, naming its callback; and each callback's
+// run, the functions' indices in order. `separate`: a run of one each. An
+// index may come twice, in any order; one that names no function is
+// refused here (the callbacks are the runs, so pandoc can't tell).
+function plan(filters, n, separate) {
+  if (!Array.isArray(filters)) throw new InputError("filters: an array");
+  const entries = [];
+  const runs = [];
+  let run = [];
+  const flush = () => {
+    if (!run.length) return;
+    entries.push({ type: "callback", index: runs.length });
+    runs.push(run);
+    run = [];
+  };
+  for (const f of filters) {
+    if (f?.type !== "callback") {
+      flush();
+      entries.push(f);
+      continue;
+    }
+    if (!(Number.isInteger(f.index) && f.index >= 0 && f.index < n))
+      throw new InputError(`filters: a callback filter needs an "index" below ${n} (the number of functions given), not ${JSON.stringify(f.index)}`);
+    run.push(f.index);
+    if (separate) flush();
+  }
+  flush();
+  return [entries, runs];
+}
+
 // Writers whose output is bytes, not text (as libpandoc-python's): what
 // convert returns as bytes unless told otherwise.
 const BINARY_WRITERS = new Set(["docx", "odt", "epub", "epub2", "epub3", "pptx", "pdf", "chunkedhtml", "xlsx"]);
@@ -315,6 +361,73 @@ export async function start(module, wasi) {
     return { ...opts, ...options };
   }
 
+  // One callback running fns[i] for each i of `run`, in turn: one exchange
+  // with pandoc. kinds[i]: "plain" (takes and returns the document as an
+  // object), "raw" (JSON text) or "bytes" (a wasm filter's). From one to
+  // the next: a plain function's object as it is to a plain one, written
+  // once (JSON.stringify) to the others; what a raw or bytes one wrote
+  // parsed once for a plain one, as it is (unchecked) for the others. A
+  // failure names the function (pandoc names only the callback), and when
+  // what it failed on is what a raw or bytes one wrote, that one too.
+  function chain(run, fns, kinds) {
+    return (doc, ctx) => {
+      let wire = doc; // the document as bytes, or null: then `obj`
+      let obj;
+      let wrote = null; // the raw or bytes function that wrote `wire`
+      const context = str(ctx);
+      for (const i of run) {
+        const from = wrote;
+        const fail = (e, unchecked) => {
+          let message;
+          try {
+            message = String(e?.message ?? e);
+          } catch {
+            message = "the filter failed";
+          }
+          const hint = unchecked && from !== null
+            ? ` (its input is what fns[${from}] wrote, unchecked: LIBPANDOC_SEPARATE_FILTERS=1 has pandoc check it)` : "";
+          return new Error(`fns[${i}]: ${message}${hint}`, { cause: e });
+        };
+        const promise = (out) => {
+          if (typeof out?.then === "function")
+            throw new Error("the filter returned a Promise: filters run synchronously");
+        };
+        if (kinds[i] === "plain") {
+          if (wire !== null) {
+            try {
+              obj = JSON.parse(str(wire));
+            } catch (e) {
+              throw fail(e, true);
+            }
+          }
+          try {
+            // (the context parsed for each: one function's changes to it
+            // don't reach the next)
+            const out = fns[i](obj, JSON.parse(context), self);
+            if (out === undefined) throw new Error("the filter returned no document (a missing return?)");
+            promise(out);
+            obj = out;
+          } catch (e) {
+            throw fail(e, false);
+          }
+          wire = null;
+          wrote = null;
+        } else {
+          if (wire === null) wire = utf8.encode(JSON.stringify(obj));
+          try {
+            const out = kinds[i] === "raw" ? fns[i](str(wire), context, self) : fns[i](wire, ctx, self);
+            promise(out);
+            wire = toBytes(out, "the filter's answer");
+          } catch (e) {
+            throw fail(e, true);
+          }
+          wrote = i;
+        }
+      }
+      return wire ?? JSON.stringify(obj);
+    };
+  }
+
   const self = {
     exports: ex,
     abi,
@@ -340,23 +453,20 @@ export async function start(module, wasi) {
      *  functions take and return JSON text (for a library that parses it
      *  itself, such as panir, or for Python in Pyodide). A function with
      *  `bytes` set (wasm-filter.mjs's) takes and returns bytes. The output
-     *  as `convert`'s. */
-    convertWithFilters(options, input, fns, { raw = false, bytes } = {}) {
+     *  as `convert`'s. Consecutive entries naming functions are one
+     *  exchange with pandoc, unless `separateFilters` (by default, in Node,
+     *  $LIBPANDOC_SEPARATE_FILTERS) makes each its own (README:
+     *  "Consecutive filters"). */
+    convertWithFilters(options, input, fns, { raw = false, bytes, separateFilters } = {}) {
       const opts = { ...options };
       if (!opts.filters?.some((f) => f?.type === "callback")) {
         opts.filters = [...(opts.filters ?? []), ...fns.map((_, i) => ({ type: "callback", index: i }))];
       }
-      // a function marked `bytes` (a wasm filter) takes and returns bytes
-      const wrapped = fns.map((fn) => fn.bytes ? (doc, ctx) => fn(doc, ctx, self) : raw
-        ? (doc, ctx) => fn(str(doc), str(ctx), self)
-        : (doc, ctx) => {
-          const out = fn(JSON.parse(str(doc)), JSON.parse(str(ctx)), self);
-          if (out === undefined) throw new Error("the filter returned no document (a missing return?)");
-          if (typeof out?.then === "function")
-            throw new Error("the filter returned a Promise: filters run synchronously");
-          return JSON.stringify(out);
-        });
-      return output(ok(abi.convertFilters(JSON.stringify(opts), input, wrapped)).output, options, bytes);
+      const kinds = fns.map((fn) => fn.bytes ? "bytes" : raw ? "raw" : "plain");
+      const [entries, runs] = plan(opts.filters, fns.length, separate(separateFilters));
+      opts.filters = entries;
+      return output(ok(abi.convertFilters(JSON.stringify(opts), input,
+                                          runs.map((run) => chain(run, fns, kinds)))).output, options, bytes);
     },
     query(q) {
       return JSON.parse(str(ok(abi.query(JSON.stringify(q))).output));
@@ -366,9 +476,14 @@ export async function start(module, wasi) {
      *  pandoc's exit status as the result. `filters`: JS functions (as
      *  convertWithFilters takes them, bytes only: a wasm filter's) that
      *  replace those of the arguments, given as `filtersJson`, a list as
-     *  the "filters" option naming them {type: "callback", index: i}. */
-    main(args, { filtersJson = null, filters = [] } = {}) {
-      return abi.main(["pandoc", ...args], filtersJson === null ? null : JSON.stringify(filtersJson), filters);
+     *  the "filters" option naming them {type: "callback", index: i};
+     *  consecutive ones are one exchange with pandoc, as convertWithFilters'
+     *  (and `separateFilters` as there). */
+    main(args, { filtersJson = null, filters = [], separateFilters } = {}) {
+      if (filtersJson === null) return abi.main(["pandoc", ...args], null, filters);
+      const [entries, runs] = plan(filtersJson, filters.length, separate(separateFilters));
+      const kinds = filters.map(() => "bytes");
+      return abi.main(["pandoc", ...args], JSON.stringify(entries), runs.map((run) => chain(run, filters, kinds)));
     },
     /** Read many texts, each on its own: their documents (pandoc's JSON),
      *  or {error: {kind, message}} in a text's place. `from`: the options

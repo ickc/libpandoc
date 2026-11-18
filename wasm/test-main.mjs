@@ -56,9 +56,9 @@ writeFileSync(join(work, "in.md"), "# Hi\n\n*there*\n");
 writeFileSync(join(work, "warn.tex"), "\\input{nope}\n\nx\n");
 writeFileSync(join(work, "print.lua"), "print('from Lua')\nfunction Str(s) return pandoc.Str(s.text:upper()) end\n");
 
-function wasm(args, { input = "", times = 1 } = {}) {
+function wasm(args, { input = "", times = 1, env = {} } = {}) {
   const r = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", runner, "--", path, String(times), ...args],
-                      { cwd: work, input, encoding: "utf8" });
+                      { cwd: work, input, encoding: "utf8", env: { ...process.env, ...env } });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -149,4 +149,21 @@ test("a wasm filter on the command line, as a callback", { skip: !filters && "WA
   const r = wasm(["in.md", "-t", "plain", "-F", upper, "--lua-filter=print.lua"]);
   assert.deepEqual(r, { status: 0, stdout: "from Lua\nHI\n\nTHERE\n", stderr: "" });
   assert.equal(wasm(["in.md", "-t", "plain", "-F", upper]).stdout, "HI\n\nTHERE\n");
+});
+
+test("consecutive wasm filters on the command line: one exchange, unless LIBPANDOC_SEPARATE_FILTERS=1",
+     { skip: !filters && "WASM_FILTERS not set" }, () => {
+  const args = ["in.md", "-t", "plain", "--verbose", "-F", join(filters, "upper.wasm"), "-F", join(filters, "modify.wasm")];
+  const callbacks = (v) => {
+    const r = wasm(args, { env: { LIBPANDOC_SEPARATE_FILTERS: v } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "HI\n\nTHERE\n");
+    return r.stderr.match(/Running filter libpandoc:callback\//g).length;
+  };
+  assert.equal(callbacks(""), 1);
+  assert.equal(callbacks("0"), 1);
+  assert.equal(callbacks("1"), 2);
+  const bad = wasm(args, { env: { LIBPANDOC_SEPARATE_FILTERS: "yes" } });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /LIBPANDOC_SEPARATE_FILTERS: 1 .*, or 0 or empty, not "yes"/);
 });
