@@ -34,7 +34,8 @@ common deps
                     scientific,
                     skylighting,
                     temporary,
-                    text
+                    text,
+                    transformers
 
 -- Everything but the exports, separate from the foreign library, whose
 -- cbits refer to the exports. (Template Haskell in these modules would
@@ -42,7 +43,8 @@ common deps
 library
   import:           deps
   hs-source-dirs:   src
-  exposed-modules:  LibPandoc.Query
+  exposed-modules:  LibPandoc.Panclude
+                    LibPandoc.Query
                     LibPandoc.Result
                     LibPandoc.Untrusted
                     LibPandoc.WriterOptions

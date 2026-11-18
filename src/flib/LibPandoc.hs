@@ -124,6 +124,7 @@ import Text.Pandoc.Scripting (ScriptingEngine (..))
 import qualified Text.Pandoc.UTF8 as UTF8
 import Text.Pandoc.Version (pandocVersionText)
 
+import qualified LibPandoc.Panclude as Panclude
 import LibPandoc.Query (query)
 import LibPandoc.Untrusted (Call (..), untrusted, untrustedQuery)
 import LibPandoc.WriterOptions (writerOptionsJSON, writerOptionsVariable)
@@ -189,21 +190,23 @@ hsConvertFilters optPtr optLen inPtr inLen hasIn filters nFilters = respond $ do
         when (isUntrusted && isNothing input) $
           Left "untrusted code gives pandoc_convert its input"
         -- (after untrusted, which refuses the code's own cancel token and
-        -- adds the host's)
+        -- panclude roots, and adds the host's)
         (token, v3) <- cancelToken v2
-        (given, v4) <- citeprocFiles v3
-        v5 <- callbackFilters (fromIntegral nFilters) v4
+        (hostRoots, v3') <- Panclude.hostRoots isUntrusted v3
+        (given, v4) <- citeprocFiles v3'
+        (named, v4') <- Panclude.filterEntries v4
+        v5 <- callbackFilters (fromIntegral nFilters) v4'
         f <- Aeson.parseEither Aeson.parseJSON v5
         let opts = f defaultOpts
         when (isJust given && not (optSandbox opts)) $
           Left "\"citeproc-files\" needs pandoc's sandbox (\"sandbox\": true, or \"untrusted\"): without it citeproc reads the files from the disk"
-        pure (limit, token, isUntrusted, fromMaybe [] given, opts)
+        pure (limit, token, isUntrusted, fromMaybe [] given, (hostRoots, named), opts)
   case parsed of
     Left e -> throwIO $ PandocOptionError $ T.pack e
-    Right (limit, token, noUserData, given, opts) -> do
+    Right (limit, token, noUserData, given, roots, opts) -> do
       cs <- cancelScope token
       limited limit $ cancellable cs $
-        convert (withHooks cs given filters (fromIntegral nFilters)) noUserData opts input
+        convert (withHooks cs given roots filters (fromIntegral nFilters)) noUserData opts input
 
 -- | The path standing for callback filter @i@: a Lua filter's, so that
 -- pandoc hands it to the engine, where 'withCallbacks' catches it.
@@ -244,7 +247,9 @@ citeprocPath = "libpandoc:citeproc"
 -- | Route JSON filters through the engine, as Lua filters with reserved
 -- paths, so that 'withHooks' runs them. (Not @pandoc-citeproc@, which pandoc
 -- itself looks for among the JSON filters, to warn that it's deprecated.)
--- With the sandbox on, citeproc too, where it stands among the filters.
+-- The JSON filter @panclude@ (@-F panclude@, @"panclude"@ in the options) is
+-- the include step ("LibPandoc.Panclude"), not a program of that name. With
+-- the sandbox on, citeproc too, where it stands among the filters.
 routeFilters :: Opt -> Opt
 routeFilters opts
   | optSandbox opts && CiteprocFilter `elem` optFilters opts =
@@ -252,6 +257,7 @@ routeFilters opts
   | otherwise = routed
   where
     routed = opts { optFilters = map route (optFilters opts) }
+    route (JSONFilter "panclude") = LuaFilter Panclude.entryPath
     route (JSONFilter f)
       | takeBaseName f /= "pandoc-citeproc" = LuaFilter (jsonPrefix ++ f)
     route CiteprocFilter | optSandbox opts = LuaFilter citeprocPath
@@ -311,10 +317,14 @@ withoutCitations opts = case writerFormat of
 
 -- | The engine, answering the reserved paths: callback filters by calling
 -- them (calls they make inherit the cancel tokens @cs@), JSON filters by
--- running them, citeproc in the sandbox (with the files @given@).
-withHooks :: [MVar ()] -> [(FilePath, B.ByteString)] -> Ptr () -> Int -> Opt
-          -> ScriptingEngine -> ScriptingEngine
-withHooks cs given filters n opts engine = engine { engineApplyFilter = apply }
+-- running them, citeproc in the sandbox (with the files @given@), the
+-- include step (with its @roots@: the host's for untrusted options, and
+-- those its entries name, 'Panclude.filterEntries'). @stdinFile@: the file
+-- holding pandoc_convert's input, which is standard input to the step.
+withHooks :: [MVar ()] -> [(FilePath, B.ByteString)] -> (Maybe [FilePath], [[FilePath]])
+          -> Ptr () -> Int -> Opt -> Maybe FilePath -> ScriptingEngine -> ScriptingEngine
+withHooks cs given (hostRoots, named) filters n opts stdinFile engine =
+  engine { engineApplyFilter = apply }
   where
     apply :: (PandocMonad m, MonadIO m)
           => Environment -> [String] -> FilePath -> Pandoc -> m Pandoc
@@ -335,7 +345,23 @@ withHooks cs given filters n opts engine = engine { engineApplyFilter = apply }
           f' <- fromMaybe f <$> findFileWithDataFallback "filters" f
           liftIO (runJSONFilter opts env args f' doc) >>= either throwError pure
       | path == citeprocPath = citeprocSandboxed opts given doc
+      | path == Panclude.entryPath = include bare env doc
+      | Just i <- stripPrefix Panclude.entryPrefix path
+      , [(k, "")] <- reads i, k >= 0, k < length named = include (Just (named !! k)) env doc
       | otherwise = engineApplyFilter engine env args path doc
+    -- an entry naming no roots: the main document's directory; for
+    -- untrusted options the host's roots, under pandoc's sandbox none
+    bare = case hostRoots of
+      Just rs -> Just rs
+      Nothing | optSandbox opts -> Just []
+              | otherwise -> Nothing
+    include :: (PandocMonad m, MonadIO m) => Maybe [FilePath] -> Environment -> Pandoc -> m Pandoc
+    include roots env = Panclude.panclude Panclude.Config
+      { Panclude.cfgRoots = roots
+      , Panclude.cfgDocument = Panclude.document stdinFile (optInputFiles opts)
+      , Panclude.cfgFormat = inputFormat opts
+      , Panclude.cfgReader = envReaderOptions env
+      }
 
 -- | Run a JSON filter as pandoc's own Text.Pandoc.Filter.JSON does (the
 -- interpreter by file extension, the same environment), and also tell it
@@ -439,7 +465,7 @@ hsConvertArgsFilters argc argv inPtr inLen hasIn filters nFilters = respond $ do
   cs <- cancelScope Nothing
   case parsed of
     Right opts -> cancellable cs $
-      convert (withHooks cs [] filters (fromIntegral nFilters)) False opts input
+      convert (withHooks cs [] (Nothing, []) filters (fromIntegral nFilters)) False opts input
     Left (OptError e) -> throwIO e
     Left info -> throwIO $ PandocOptionError $
       "informational option (" <> T.pack (takeWhile (/= ' ') (show info)) <>
@@ -727,16 +753,17 @@ hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
           pure 1
   where
     mainWith prg args = do
-      override <- if fPtr == nullPtr then pure Nothing else do
+      (override, named) <- if fPtr == nullPtr then pure (Nothing, []) else do
         json <- peekBytes fPtr fLen
         let parsed = do
               v <- Aeson.eitherDecodeStrict json
-              wrapped <- callbackFilters (fromIntegral nFilters)
-                           (Aeson.object ["filters" .= (v :: Aeson.Value)])
+              (named, entries) <- Panclude.filterEntries (Aeson.object ["filters" .= (v :: Aeson.Value)])
+              wrapped <- callbackFilters (fromIntegral nFilters) entries
               case wrapped of
-                Aeson.Object o | Just fs <- KM.lookup "filters" o -> Aeson.parseEither Aeson.parseJSON fs
+                Aeson.Object o | Just fs <- KM.lookup "filters" o ->
+                  (\x -> (Just x, named)) <$> Aeson.parseEither Aeson.parseJSON fs
                 _ -> Left "filters: expected a list"
-        either (throwIO . PandocOptionError . T.pack) (pure . Just) parsed
+        either (throwIO . PandocOptionError . T.pack) pure parsed
       E.handle (handleError . Left) $ case (takeBaseName prg, subcommand args) of
         ("pandoc-lua", _) -> runLuaInterpreter prg args
         (_, Just "lua") -> runLuaInterpreter (prg ++ " lua") (drop 1 args)
@@ -759,7 +786,8 @@ hsMain argc argv fPtr fLen filters nFilters = handleAll (const (pure 1)) $ do
               -- (a call from a callback filter: cancelled with its conversion)
               cs <- cancelScope Nothing
               whileNotCancelled cs $
-                convertWithOpts (withHooks cs [] filters (fromIntegral nFilters) opts engine)
+                convertWithOpts (withHooks cs [] (Nothing, named) filters (fromIntegral nFilters)
+                                           opts Nothing engine)
                                 (routeFilters opts)
     -- pandoc-cli's, for what pandoc_main does: no server, pandoc lua but
     -- in the wasm build
@@ -851,7 +879,8 @@ renderFormat (Format.FlavoredFormat name diff) =
 
 -- | Run a conversion as the pandoc CLI would, but with @input@ (if given) as
 -- stdin and stdout captured, filters routed through the engine
--- ('routeFilters'), and the Lua engine adapted by @engineWith@. With
+-- ('routeFilters'), and the Lua engine adapted by @engineWith@ (told the
+-- file that holds the input given, which is standard input). With
 -- @noUserData@ (untrusted options), the user data directory is an empty
 -- one: templates and their partials, abbreviations, reference documents,
 -- translations, CSL styles come from pandoc's own data. (Not those in
@@ -859,7 +888,7 @@ renderFormat (Format.FlavoredFormat name diff) =
 -- through the process's environment: the template, its partials,
 -- dzslides' template, the abbreviations. Only the environment says where
 -- they are, which other threads read: the header.)
-convert :: (Opt -> ScriptingEngine -> ScriptingEngine) -> Bool -> Opt
+convert :: (Opt -> Maybe FilePath -> ScriptingEngine -> ScriptingEngine) -> Bool -> Opt
         -> Maybe B.ByteString -> IO Result
 convert engineWith noUserData opts input = withTempDirectory $ \tmp -> do
   let stdinFile = tmp </> "stdin"
@@ -907,7 +936,7 @@ convert engineWith noUserData opts input = withTempDirectory $ \tmp -> do
             Nothing | toStdout -> Just "html"
             t -> t
         }
-  engine <- engineWith opts' <$> getEngine
+  engine <- engineWith opts' (stdinFile <$ input) <$> getEngine
   done <- trySync (convertWithOpts engine (routeFilters opts'))
   -- the log, also of a conversion that failed after writing it (as
   -- --fail-if-warnings does, its warnings being the reason); but not the
