@@ -14,9 +14,12 @@
 // It runs synchronously, as pandoc calls filters: a fresh instance of the
 // compiled module per run, with an in-memory stdin and stdout
 // (@bjorn3/browser_wasi_shim, pure JS, so the same in Node), and only the
-// directories given: by default, in Node, the working directory, read-only
-// (node-dir.mjs), as the other hosts give it; in a browser, none (there is
-// no working directory).
+// directories given: by default none (least privilege: a wasm filter is
+// for code not trusted). In Node, $LIBPANDOC_WASM_DIRS gives some, as the
+// other hosts take it: directories as PATH lists them (":", on Windows
+// ";"), read-only, each seen under its absolute path and its path relative
+// to the working directory (node-dir.mjs's hostPreopens). A filter that
+// fails while it has no directory says so.
 //
 // A filter may call pandoc (libpandoc-rs's `libpandoc::read` and the like,
 // built for wasm): its `libpandoc` imports are calls to the libpandoc.wasm
@@ -167,13 +170,22 @@ function libpandocImports(abi, memory) {
   };
 }
 
+/** The directories of $LIBPANDOC_WASM_DIRS: as PATH lists them (empty
+ *  entries are none). */
+function wasmDirs(s) {
+  const delimiter = globalThis.process?.platform === "win32" ? ";" : ":";
+  return (s ?? "").split(delimiter).filter((d) => d !== "");
+}
+
 /** A filter from a wasm module (its bytes, or a compiled
  *  WebAssembly.Module, which can't be given a `maxMemory`). `name` is its
  *  first argument (argv[0]); `maxMemory`: the most memory it may have, in
  *  bytes (null: none; by default, in Node, $LIBPANDOC_WASM_MAX_MEMORY);
  *  `preopens`: directories it may see (browser_wasi_shim
- *  PreopenDirectory; by default, in Node, the working directory, read-only,
- *  as `.`; elsewhere none); `pandocVersion`: for PANDOC_VERSION (by default,
+ *  PreopenDirectory, node-dir.mjs's; by default none, but in Node
+ *  $LIBPANDOC_WASM_DIRS's, as node-dir.mjs's hostPreopens gives them,
+ *  found when it runs; a `preopens` given, also [], replaces them);
+ *  `pandocVersion`: for PANDOC_VERSION (by default,
  *  the pandoc's it runs in); `pandoc`: the libpandoc.wasm (core.mjs's) the
  *  filter's calls to pandoc go to (by default, the one it runs in); `stderr`:
  *  where its standard error's lines go. The result is a function on bytes,
@@ -187,9 +199,18 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens, pando
   if (maxMemory != null) source = withMaxMemory(source, maxMemory, name);
   const module = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source);
   const callsPandoc = WebAssembly.Module.imports(module).some((i) => i.module === "libpandoc");
-  // in Node, the working directory, read-only, when it runs
-  const cwd = preopens === undefined && globalThis.process?.versions?.node
-    ? (await import("./node-dir.mjs")).nodeDirectory : null;
+  // in Node, by default, $LIBPANDOC_WASM_DIRS's directories, when it runs
+  const dirs = preopens === undefined && globalThis.process?.versions?.node
+    ? wasmDirs(globalThis.process.env.LIBPANDOC_WASM_DIRS) : null;
+  const hostPreopens = dirs?.length ? (await import("./node-dir.mjs")).hostPreopens : null;
+  const given = () => {
+    if (!hostPreopens) return preopens ?? [];
+    try {
+      return hostPreopens(dirs);
+    } catch (e) {
+      throw new Error(`${name}: LIBPANDOC_WASM_DIRS: ${e.message}`);
+    }
+  };
   // the conversion's instance: core.mjs gives a filter its own (third argument)
   function run(doc, context, conversionPandoc = null) {
     const target = pandoc ?? conversionPandoc;
@@ -204,13 +225,17 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens, pando
     if (ctx["output-format"]) env.push(`PANDOC_OUTPUT_FORMAT=${ctx["output-format"]}`);
     // (libpandoc 1.13)
     if (typeof ctx.sandbox === "boolean") env.push(`PANDOC_SANDBOX=${ctx.sandbox}`);
+    const dirsGiven = given();
     const stdout = new File([]);
     const fds = [
       new OpenFile(new File(doc)),
       new OpenFile(stdout),
       ConsoleStdout.lineBuffered(stderr),
-      ...(cwd ? [cwd(".", ".")] : preopens ?? []),
+      ...dirsGiven,
     ];
+    // what may explain a failure: its memory limit, that it has no directory
+    const hints = (maxMemory == null ? "" : ` (its memory limit: ${maxMemory} bytes, LIBPANDOC_WASM_MAX_MEMORY)`)
+      + (dirsGiven.length ? "" : dirs ? " (it was given no directory: LIBPANDOC_WASM_DIRS)" : " (it was given no directory)");
     // debug: false, or the shim logs every call (its default when omitted)
     const wasi = new WASI([name, ctx.format ?? ""], env, fds, { debug: false });
     const imports = { wasi_snapshot_preview1: wasi.wasiImport };
@@ -221,14 +246,11 @@ export async function wasmFilter(source, { name = "filter.wasm", preopens, pando
     try {
       status = wasi.start(instance);
     } catch (e) {
-      if (maxMemory == null || !(e instanceof WebAssembly.RuntimeError)) throw e;
-      throw new Error(`${name}: ${e.message} (its memory limit: ${maxMemory} bytes, LIBPANDOC_WASM_MAX_MEMORY)`);
+      if (!hints || !(e instanceof WebAssembly.RuntimeError)) throw e;
+      throw new Error(`${name}: ${e.message}${hints}`, { cause: e });
     }
     run.memory = Math.max(run.memory, instance.exports.memory.buffer.byteLength);
-    if (status !== 0) {
-      const limit = maxMemory == null ? "" : ` (its memory limit: ${maxMemory} bytes, LIBPANDOC_WASM_MAX_MEMORY)`;
-      throw new Error(`${name} exited with status ${status}${limit}`);
-    }
+    if (status !== 0) throw new Error(`${name} exited with status ${status}${hints}`);
     return stdout.data;
   }
   run.bytes = true;
