@@ -263,3 +263,31 @@ test("a memory limit: its memory can't grow past it", async () => {
   assert.equal(parseMemory(""), null);
   assert.throws(() => parseMemory("12x"));
 });
+
+// Consecutive filters, wasm ones too, are one exchange with pandoc: what one
+// writes the next is given, unchecked, unless separateFilters.
+test("wasm filters in a run give what they give apart, mixed with JS ones, in order", async () => {
+  const [upper, modify, identity] = await Promise.all(["upper", "modify", "identity"].map((n) => filter(n)));
+  const input = "# A head\n\nhello [link](x.md) `code`{.c}\n";
+  const run = (fns, separateFilters) => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, input, fns,
+                                                                  { separateFilters });
+  assert.equal(run([upper, modify], false), run([upper, modify], true));
+  const push = (s) => (doc) => { doc.blocks.push({ t: "Para", c: [{ t: "Str", c: s }] }); return doc; };
+  const mixed = [push("b"), upper, push("c"), identity, push("d")];
+  assert.equal(run(mixed, false), run(mixed, true));
+  assert.match(run(mixed, false), /HELLO.*\n\nB\n\nc\n\nd\n$/s);
+});
+
+test("what a filter on bytes wrote a wasm filter is given unchecked; failing on it, it says whose it was", async () => {
+  const upper = await filter("upper", { stderr: () => {} });
+  // (a function marked bytes, as a wasm filter's is, writing what isn't a document)
+  const garble = Object.assign(() => "not a document", { bytes: true });
+  const run = (separateFilters) => () => pandoc.convertWithFilters({ from: "markdown", to: "plain" }, "x",
+                                                                     [garble, upper], { separateFilters });
+  assert.throws(run(false), (e) => e instanceof PandocError
+    && /fns\[1\]: upper\.wasm exited with status/.test(e.message)
+    && /\(its input is what fns\[0\] wrote, unchecked: LIBPANDOC_SEPARATE_FILTERS=1 has pandoc check it\)/.test(e.message));
+  // apart, pandoc refuses it after the first
+  assert.throws(run(true), (e) => e instanceof PandocError && /invalid document/.test(e.message)
+    && !/its input is what/.test(e.message));
+});

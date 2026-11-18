@@ -94,6 +94,68 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `@bjorn3/browser_wasi_shim` (`/tmp` in memory, or any directories given;
   run it in a Worker). Calls are synchronous, one at a time per instance;
   a filter may call the same instance again (nested, not concurrent).
+- **Consecutive filters:** pandoc hands a JS filter the whole document as
+  its JSON and reads back the one it returns: an exchange. **Consecutive
+  entries of `options.filters` naming functions share one exchange, by
+  default**: plain functions (given and returning the document as an
+  object), `raw` ones (JSON text) and those marked `bytes` (a wasm
+  filter's); `main`'s functions alike. Any other entry (a Lua filter)
+  ends a run; `options.filters` may name a function twice, in any order,
+  and an index naming no function is a `TypeError` before the call. Within
+  a run, from one function to the next: from a plain one to a plain one,
+  the very object it returned; from a plain one to the others, written
+  once (`JSON.stringify`); from a raw or `bytes` one to a plain one, what
+  it wrote parsed once (`JSON.parse`); from a raw or `bytes` one to
+  another, the bytes exactly as written, unchecked. Each is given its own
+  parse of the context (one changing it doesn't reach the next). A wasm
+  filter keeps its own memory limit and directories, and its calls into
+  pandoc are as they were. panir's own `libpandocFilter([f1, f2])` runs a
+  list on one parse of its own: give it the list to share panir's parse
+  too. On a 9.8 MB textbook in Node 26, JSON to HTML (best of 5), three
+  plain functions returning the document took 10.3 s and now 8.8 s, what
+  one takes (none: 7.9 s); three wasm `identity` filters take 13.5 s apart
+  and 12.1 s together (one: 9.8 s): a wasm filter's own run (a fresh
+  instance, the document through an in-memory stdin and stdout) costs
+  more here than the exchange.
+
+  **The switch:** `{ separateFilters: true }` (convertWithFilters' and
+  main's last argument, beside `raw` and `bytes`) makes every function its
+  own exchange, so that pandoc reads and checks the document between any
+  two. By default, in Node, it is
+  `$LIBPANDOC_SEPARATE_FILTERS`: `1` on; unset, empty or `0` off; anything
+  else a `TypeError` naming the variable and the value (a safety switch is
+  not to be ignored); `separateFilters` given wins over it. In a browser,
+  off unless given.
+
+  **The safety side.** Chained, pandoc no longer reads the document between
+  two functions: a later one is given exactly what the earlier one wrote,
+  and for raw and wasm filters, its bytes. pandoc always checks the final
+  document. The switch is for finding which function broke a document, and
+  for not letting one filter's bytes reach the next unchecked.
+
+  What changes for a filter's author, against the same functions apart
+  (`test.mjs` shows each):
+  - the next function is given exactly what the one before returned, not
+    pandoc's reading of it: the metadata's keys in the order the function
+    put them (pandoc writes them sorted), and a node put in two places by
+    reference is one object, so changed in place it changes in both
+    places, where apart they would be two copies;
+  - a document pandoc would refuse (a node it doesn't know) is refused
+    when the run ends, not after the function that made it: a later
+    function may repair it (or one of the run that can't read it fails
+    first, below);
+  - pandoc's verbose log counts a run as one filter (`main` with
+    `--verbose`: one `Running filter libpandoc:callback/0`); a conversion
+    here logs no such messages;
+  - state in the document's metadata, and a function's own (its closure, a
+    module's globals), behave the same either way: the same instance and
+    the same document;
+  - a function that fails (throws, returns nothing or a Promise) fails the
+    run, and those after it don't run; the error names it by its index,
+    `fns[1]: ...` (pandoc names the callback, which is the run), and when
+    what it failed on went unchecked from a raw or `bytes` function before
+    it, says whose it was: `(its input is what fns[0] wrote, unchecked:
+    LIBPANDOC_SEPARATE_FILTERS=1 has pandoc check it)`.
 - **What a document reaches:** only the directories the host gives the
   module. A path leaving them through `..` or an absolute path elsewhere
   is refused by all three shims (tested in Node for `node:wasi` and the
