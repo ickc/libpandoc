@@ -192,7 +192,7 @@ jobs:
             Linux) cc -Wall -o dist/command test/command.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,'$ORIGIN/lib' ;;
             macOS) cc -Wall -o dist/command test/command.c -Idist/include -Ldist/lib -lpandoc -Wl,-rpath,@executable_path/lib ;;
           esac
-          git clone --depth 1 --branch builtin-cases https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
+          git clone --depth 1 https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
           node --version
           PANCLUDE="$RUNNER_TEMP/panclude" LIBPANDOC_COMMAND="$PWD/dist/command" node --test test/panclude.mjs
           rm dist/command
@@ -262,7 +262,7 @@ jobs:
       - name: panclude's cases in Node
         run: |
           source ~/.ghc-wasm/env
-          git clone --depth 1 --branch builtin-cases https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
+          git clone --depth 1 https://github.com/ickc/panclude "$RUNNER_TEMP/panclude"
           PANCLUDE="$RUNNER_TEMP/panclude" node --test test/panclude.mjs
 
       # Rust filters compiled to wasm (libpandoc-rs's examples, WASI
