@@ -596,3 +596,20 @@ test("panclude: inside its roots only, also past a link to a directory outside (
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test("panclude in browser.mjs's in-memory /tmp: its roots as the module names them (1.15)", async () => {
+  const p = await loadInMemory(pandoc.module, { files: { "/tmp/part.md": "hello *from the part*\n" } });
+  const doc = '```{include="/tmp/part.md"}\nPLACEHOLDER\n```\n';
+  const plain = (filters) => p.convert({ to: "plain", filters }, doc);
+  assert.match(plain([{ type: "panclude", roots: ["/tmp"] }]), /hello \*from the part\*/);
+  // the default for input given: the working directory, / until chdir, so
+  // every directory the host opened
+  assert.match(plain(["panclude"]), /hello \*from the part\*/);
+  // a root the module has no directory for: an error
+  assert.throws(() => plain([{ type: "panclude", roots: ["/elsewhere"] }]),
+                (e) => e instanceof PandocError && e.kind === "PandocOptionError");
+  assert.match(p.convert({ to: "plain", filters: ["panclude"], untrusted: true }, doc), /PLACEHOLDER/);
+  assert.match(p.convert({ to: "plain", filters: ["panclude"], untrusted: { "panclude-roots": ["/tmp"] } }, doc),
+               /hello \*from the part\*/);
+  p.close();
+});

@@ -58,11 +58,42 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   garbage-collected, else when the process exits; `browser.mjs`'s is a
   `Map` in memory, emptied by `close()`. A closed instance throws a
   `StoppedError`.
-- **The include step** (`"panclude"` among the filters, 1.15: the
-  top-level README) is the same here, inside the directories the host
-  opened: it resolves symbolic links itself, part by part, so that a link
-  to a directory outside its roots is refused although `node:wasi` would
-  follow it (`test.mjs`).
+- **The include step** (1.15: the top-level README) is
+  [panclude](https://github.com/ickc/panclude)'s `include` attribute run
+  inside the conversion: a code block, raw block or div naming a file is
+  filled with it, so that every filter after the step sees the content as
+  if the document held it. Off unless named in `options.filters`:
+  `"panclude"`, or `{ type: "panclude", roots: [...] }`; `main`'s `-F
+  panclude` (a host's `parse-args` gives `{ type: "json", path:
+  "panclude" }`, which libpandoc runs as the step: a host turns only
+  `.wasm` paths into callbacks). One of pandoc's own entries, it ends a
+  run of functions. With libpandoc-rs's example filters, given no
+  directory:
+
+  ```js
+  const parse = await wasmFilter(parseBytes, { name: "parse.wasm" });
+  const upper = await wasmFilter(upperBytes, { name: "upper.wasm" });
+  pandoc.chdir("/work");    // a directory the host opened, holding part.md
+  pandoc.convertWithFilters({ to: "plain", filters: ["panclude", { type: "callback", index: 0 },
+    { type: "callback", index: 1 }] }, '```{.parse include="part.md"}\nplaceholder\n```\n', [parse, upper]);
+  // "HELLO FROM THE PART\n": part.md read as markdown, upper-cased, by filters that read no file
+  ```
+
+  Its roots are paths as the module sees them, the host's preopens
+  (`/work`, `/tmp`), as every path in the options is: by default the main
+  document's directory, and for input given the working directory (`/`
+  until `chdir`, so every directory the host opened); a root the module
+  has no directory for is an option error. A path outside them is not
+  read: the element stays as it was, with a warning in the log naming the
+  path and the reason (`outside the roots`). Under pandoc's sandbox
+  (`sandbox: true`) only roots named count. Untrusted options may name
+  the step, not its roots: the host gives them in `untrusted: {
+  "panclude-roots": [...] }`, and with `untrusted: true` it reads nothing;
+  so a wasm filter's calls to pandoc (`wasm-filter.mjs` writes
+  `untrusted: true` over theirs) read nothing through it. It resolves
+  symbolic links itself, part by part, so that a link to a directory
+  outside its roots is refused although `node:wasi` would follow it
+  (`test.mjs`). The syntax and the warnings: panclude's README.
 - **Not in it:** threads (`read_many` reads one after another), JSON filters
   (WASI can't start processes), `pandoc lua`, PDF, HTTP.
 - **Engines** (tested 2026-09-28 with Playwright's browsers,
@@ -104,8 +135,8 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   entries of `options.filters` naming functions share one exchange, by
   default**: plain functions (given and returning the document as an
   object), `raw` ones (JSON text) and those marked `bytes` (a wasm
-  filter's); `main`'s functions alike. Any other entry (a Lua filter)
-  ends a run; `options.filters` may name a function twice, in any order,
+  filter's); `main`'s functions alike. Any other entry (a Lua filter, the
+  include step) ends a run; `options.filters` may name a function twice, in any order,
   and an index naming no function is a `TypeError` before the call. Within
   a run, from one function to the next: from a plain one to a plain one,
   the very object it returned; from a plain one to the others, written
