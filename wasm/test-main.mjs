@@ -6,7 +6,7 @@
 // wasm filter on the command line too.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -192,4 +192,32 @@ test("a wasm filter on the command line: the variables LIBPANDOC_WASM_ENV names,
     assert.ok(r.stderr.includes(`LIBPANDOC_WASM_ENV: not a variable's name: ${bad}`), r.stderr);
     assert.ok(!(r.stdout + r.stderr).includes("canary"), r.stderr);
   }
+});
+
+// -F panclude: the include step (libpandoc 1.15), not a JSON filter (which
+// libpandoc.wasm can't run) nor a wasm filter, also with a file named
+// panclude in the working directory; before wasm filters given no
+// directory, which see the included text
+test("-F panclude is the include step", () => {
+  writeFileSync(join(work, "part.md"), "hello *from the part*\n");
+  writeFileSync(join(work, "inc.md"), '```{.parse include="part.md"}\nplaceholder\n```\n\n```{include="../outside.txt"}\nout\n```\n');
+  writeFileSync(join(work, "panclude"), "#!/bin/sh\necho RAN > ran.txt\ncat\n", { mode: 0o755 });
+  const outside = 'panclude: cannot include "../outside.txt" in inc.md: outside the roots';
+  let r = wasm(["inc.md", "-t", "plain", "-F", "panclude"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /hello \*from the part\*/);
+  assert.ok(r.stderr.includes(outside), r.stderr);
+  r = wasm(["inc.md", "-t", "plain", "--sandbox", "-F", "panclude"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /placeholder/);
+  assert.match(r.stderr, /there are no roots, so no file is included/);
+  if (filters) {
+    const after = ["-F", join(filters, "parse.wasm"), "-F", join(filters, "upper.wasm")];
+    r = wasm(["inc.md", "-t", "plain", "-F", "panclude", ...after], { env: { LIBPANDOC_WASM_DIRS: "" } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "HELLO FROM THE PART\n\n    out\n");
+    r = wasm(["inc.md", "-t", "plain", ...after], { env: { LIBPANDOC_WASM_DIRS: "" } });
+    assert.equal(r.stdout, "PLACEHOLDER\n\n    out\n");
+  }
+  assert.ok(!existsSync(join(work, "ran.txt")));
 });

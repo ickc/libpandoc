@@ -416,3 +416,75 @@ test("the environment: pandoc in libpandoc.wasm, and its Lua filters, don't get 
       rmSync(work, { recursive: true, force: true });
     }
   }));
+
+// The include step (libpandoc 1.15, panclude): "panclude" among
+// options.filters, one of pandoc's own entries. An instance seeing `work/`
+// as /work (its working directory), with part.md, a canary inside it (which
+// the conversion's own step may read, a wasm filter's calls never) and one
+// beside it, outside the preopens.
+async function pancludeTree(f) {
+  const top = mkdtempSync(join(tmpdir(), "wasm-filter-panclude-"));
+  try {
+    mkdirSync(join(top, "work"));
+    writeFileSync(join(top, "work", "part.md"), "hello *from the part*\n");
+    writeFileSync(join(top, "work", "inside.txt"), "CANARY-INSIDE\n");
+    writeFileSync(join(top, "outside.txt"), "CANARY-OUTSIDE\n");
+    const instance = await load(path, { preopens: { "/work": join(top, "work") } });
+    instance.chdir("/work");
+    try {
+      await f(instance);
+    } finally {
+      instance.close();
+    }
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+}
+const cb = (index) => ({ type: "callback", index });
+
+test("panclude: then wasm filters given no directory, which see the included text", () => pancludeTree(async (p) => {
+  const parse = await filter("parse", { preopens: [] });
+  const upper = await filter("upper", { preopens: [] });
+  const doc = '```{.parse include="part.md"}\nplaceholder\n```\n\n```{include="../outside.txt"}\nout\n```\n';
+  const plain = (filters) => p.convertWithFilters({ to: "plain", filters }, doc, [parse, upper]);
+  assert.equal(plain(["panclude", cb(0), cb(1)]), "HELLO FROM THE PART\n\n    out\n");
+  assert.equal(plain([cb(0), cb(1)]), "PLACEHOLDER\n\n    out\n");
+  // roots given, as the module sees them (its preopens), relative or not
+  for (const roots of [["/work"], ["."]]) {
+    assert.equal(plain([{ type: "panclude", roots }, cb(0), cb(1)]), "HELLO FROM THE PART\n\n    out\n");
+  }
+  // pandoc's sandbox: only roots named
+  const sandboxed = (filters) => p.abi.convert(JSON.stringify({ to: "plain", sandbox: true, filters }), doc);
+  const [, , , , log] = sandboxed(["panclude"]);
+  assert.ok(JSON.parse(log).every((m) => m.message.endsWith("there are no roots, so no file is included")), log);
+  // a root wider than the preopens is no directory here: an error
+  assert.throws(() => plain([{ type: "panclude", roots: ["/"] }, cb(0), cb(1)]),
+                (e) => e instanceof PandocError && e.kind === "PandocOptionError" && /is not a directory/.test(e.message));
+}));
+
+test("panclude: one of pandoc's own entries, it ends a run of JS filters", () => pancludeTree(async (p) => {
+  const seen = [];
+  const look = (d) => { seen.push(JSON.stringify(d).includes("from the part")); return d; };
+  p.convertWithFilters({ to: "plain", filters: [cb(0), "panclude", cb(1), cb(2)] },
+                       '```{include="part.md"}\n```\n', [look, look, look]);
+  assert.deepEqual(seen, [false, true, true]);
+}));
+
+test("panclude: a wasm filter's own calls name it and read nothing", () => pancludeTree(async (p) => {
+  const f = await filter("calls", { pandoc: p, preopens: [] });
+  const part = '```{include="/work/inside.txt"}\nPLACEHOLDER\n```\n';
+  const requests = [
+    { convert: [{ to: "plain", filters: ["panclude"] }, part] },
+    { convert: [{ to: "plain", filters: ["panclude"], untrusted: { "panclude-roots": ["/work"] } }, part] },
+    { convert: [{ to: "plain", filters: ["panclude"], untrusted: false }, part] },
+    { convert: [{ to: "plain", filters: ["panclude"], "panclude-roots": ["/work"] }, part] },
+    { convert: [{ to: "plain", filters: [{ type: "panclude", roots: ["/work"] }] }, part] },
+  ];
+  const input = requests.map((r) => "```call\n" + JSON.stringify(r) + "\n```\n").join("\n");
+  // the conversion's own step may read /work: the filter's calls may not
+  const out = p.convertWithFilters({ to: "json", filters: [{ type: "panclude", roots: ["/work"] }, cb(0)] }, input, [f]);
+  assert.doesNotMatch(out, /CANARY/);
+  const answers = JSON.parse(out).blocks.map((b) => JSON.parse(b.c[1]));
+  for (const a of answers.slice(0, 3)) assert.equal(a.ok?.trim(), "PLACEHOLDER", JSON.stringify(a));
+  for (const a of answers.slice(3)) assert.equal(a.error?.[0], "PandocOptionError", JSON.stringify(a));
+}));
