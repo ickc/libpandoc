@@ -442,16 +442,16 @@ async function pancludeTree(f) {
 }
 const cb = (index) => ({ type: "callback", index });
 
-test("panclude: then wasm filters given no directory, which see the included text", () => pancludeTree(async (p) => {
+test("panclude: then wasm filters given no directory, which see the included text after the block's own", () => pancludeTree(async (p) => {
   const parse = await filter("parse", { preopens: [] });
   const upper = await filter("upper", { preopens: [] });
-  const doc = '```{.parse include="part.md"}\nplaceholder\n```\n\n```{include="../outside.txt"}\nout\n```\n';
+  const doc = '```{.parse include="part.md"}\nbefore the part:\n```\n\n```{include="../outside.txt"}\nout\n```\n';
   const plain = (filters) => p.convertWithFilters({ to: "plain", filters }, doc, [parse, upper]);
-  assert.equal(plain(["panclude", cb(0), cb(1)]), "HELLO FROM THE PART\n\n    out\n");
-  assert.equal(plain([cb(0), cb(1)]), "PLACEHOLDER\n\n    out\n");
+  assert.equal(plain(["panclude", cb(0), cb(1)]), "BEFORE THE PART: HELLO FROM THE PART\n\n    out\n");
+  assert.equal(plain([cb(0), cb(1)]), "BEFORE THE PART:\n\n    out\n");
   // roots given, as the module sees them (its preopens), relative or not
   for (const roots of [["/work"], ["."]]) {
-    assert.equal(plain([{ type: "panclude", roots }, cb(0), cb(1)]), "HELLO FROM THE PART\n\n    out\n");
+    assert.equal(plain([{ type: "panclude", roots }, cb(0), cb(1)]), "BEFORE THE PART: HELLO FROM THE PART\n\n    out\n");
   }
   // pandoc's sandbox: only roots named
   const sandboxed = (filters) => p.abi.convert(JSON.stringify({ to: "plain", sandbox: true, filters }), doc);

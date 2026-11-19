@@ -60,9 +60,9 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   `StoppedError`.
 - **The include step** (1.15: the top-level README) is
   [panclude](https://github.com/ickc/panclude)'s `include` attribute run
-  inside the conversion: a code block, raw block or div naming a file is
-  filled with it, so that every filter after the step sees the content as
-  if the document held it. Off unless named in `options.filters`:
+  inside the conversion: a code block, raw block or div naming a file
+  gets the file's content after its own, so that every filter after the
+  step sees the content as if the document held it. Off unless named in `options.filters`:
   `"panclude"`, or `{ type: "panclude", roots: [...] }`; `main`'s `-F
   panclude` (a host's `parse-args` gives `{ type: "json", path:
   "panclude" }`, which libpandoc runs as the step: a host turns only
@@ -75,8 +75,9 @@ PYODIDE=... PANIR_WHEEL=... node wasm/test-pyodide.mjs   # Python filters in Pyo
   const upper = await wasmFilter(upperBytes, { name: "upper.wasm" });
   pandoc.chdir("/work");    // a directory the host opened, holding part.md
   pandoc.convertWithFilters({ to: "plain", filters: ["panclude", { type: "callback", index: 0 },
-    { type: "callback", index: 1 }] }, '```{.parse include="part.md"}\nplaceholder\n```\n', [parse, upper]);
-  // "HELLO FROM THE PART\n": part.md read as markdown, upper-cased, by filters that read no file
+    { type: "callback", index: 1 }] }, '```{.parse include="part.md"}\nbefore the part:\n```\n', [parse, upper]);
+  // "BEFORE THE PART: HELLO FROM THE PART\n": the block's text, then part.md's, read as
+  // markdown, upper-cased, by filters that read no file
   ```
 
   Its roots are paths as the module sees them, the host's preopens

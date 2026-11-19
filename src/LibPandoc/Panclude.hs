@@ -11,7 +11,8 @@
 panclude, the include step built into libpandoc: the @include@ attribute
 on code blocks and divs, as the Lua filter @panclude.lua@ does it
 (<https://github.com/ickc/panclude>, whose SPEC.md and cases are the
-contract), with what a Lua filter can't do: it reads only inside its
+contract): the file's content appended to the element's own, which isn't
+looked at. With what a Lua filter can't do: it reads only inside its
 /roots/, directories judged after symbolic links are resolved, and knows the
 main reader exactly.
 
@@ -237,10 +238,10 @@ hasIncludes = getAny . query (Any . isInclude)
       _ -> False
     includes (_, _, kvs) = isJust (lookup "include" kvs)
 
--- | Top down, so that a div's placeholder is never looked into: replaced
--- when its include succeeds, left as it was when it fails. (Generic, so
--- that every place a block can be is reached: notes, table cells, the
--- metadata.)
+-- | Top down, so that a div's included content, already done, isn't
+-- walked again; a div's own blocks are walked as any others, after its
+-- include, whether it succeeds or fails. (Generic, so that every place a
+-- block can be is reached: notes, table cells, the metadata.)
 expand :: forall m a. (PandocMonad m, MonadIO m, Data a) => Env -> Ctx -> a -> m a
 expand env ctx = go
   where
@@ -261,7 +262,7 @@ warn ctx path reason = report $ flip ScriptingWarning Nothing $
   "panclude: cannot include \"" <> path <> "\" in " <> ctxName ctx <> ": " <> reason
 
 ------------------------------------------------------------------------
--- A code block: the file's text
+-- A code block: the file's text, after its own
 
 data CodeOptions = CodeOptions
   { startLine :: Maybe Integer
@@ -271,21 +272,27 @@ data CodeOptions = CodeOptions
 
 includeCode :: (PandocMonad m, MonadIO m)
             => Env -> Ctx -> Attr -> T.Text -> T.Text -> m Block
-includeCode env ctx attr@(ident, classes, kvs) placeholder path = do
+includeCode env ctx attr@(ident, classes, kvs) own path = do
   r <- runExceptT $ do
     opts <- either throwError pure (codeOptions kvs)
     file <- locate env ctx path
     text <- readText (real file)
     (,) opts <$> either throwError pure (selectLines opts text)
   case r of
-    Left reason -> CodeBlock attr placeholder <$ warn ctx path reason
-    Right (opts, text) -> pure $ case lookup "raw" kvs of
-      Just f -> RawBlock (Format f) text
-      Nothing -> CodeBlock (ident, classes, kept opts) text
+    Left reason -> CodeBlock attr own <$ warn ctx path reason
+    Right (opts, ls) ->
+      -- the block's lines, then the file's: an empty text has none, and
+      -- so has an empty file
+      let text = T.intercalate "\n" ([own | not (T.null own)] ++ ls)
+      in pure $ case lookup "raw" kvs of
+        Just f -> RawBlock (Format f) text
+        Nothing -> CodeBlock (ident, classes, kept opts) text
   where
+    -- startFrom: the source's numbers, when the file's lines are the
+    -- block's first
     kept opts =
       [kv | kv@(k, _) <- kvs, k `notElem` ["include", "startLine", "endLine", "start-line", "end-line", "dedent"]]
-      ++ [("startFrom", tshow s) | Just s <- [startLine opts], isNothing (lookup "startFrom" kvs)]
+      ++ [("startFrom", tshow s) | Just s <- [startLine opts], T.null own, isNothing (lookup "startFrom" kvs)]
 
 -- | The attributes the step reads from a code block, checked: both
 -- spellings of the range (the hyphenated one wins, as in
@@ -308,12 +315,12 @@ codeOptions kvs = do
           Just n | n >= 1 -> Right (Just n)
           _ -> Left (written <> "=\"" <> t <> "\" is not a whole number from 1")
 
--- | The lines a code block's options select, dedented, joined by newlines.
-selectLines :: CodeOptions -> T.Text -> Either T.Text T.Text
+-- | The lines a code block's options select, dedented.
+selectLines :: CodeOptions -> T.Text -> Either T.Text [T.Text]
 selectLines opts text
   | (isJust (startLine opts) || isJust (endLine opts)) && first > final =
       Left ("the range selects none of the file's " <> tshow n <> " lines")
-  | otherwise = Right $ T.intercalate "\n" $ map undent $
+  | otherwise = Right $ map undent $
       take (fromInteger (final - first + 1)) (drop (fromInteger (first - 1)) ls)
   where
     -- (the final newline ends the last line: an empty file has none)
@@ -340,11 +347,11 @@ whole negative t = case T.uncons t of
       | otherwise = Nothing
 
 ------------------------------------------------------------------------
--- A div: the file as a document
+-- A div: the file as a document, after its own blocks
 
 includeDiv :: (PandocMonad m, MonadIO m)
            => Env -> Ctx -> Attr -> [Block] -> T.Text -> m Block
-includeDiv env ctx attr@(ident, classes, kvs) placeholder path = do
+includeDiv env ctx attr@(ident, classes, kvs) own path = do
   r <- runExceptT $ do
     shift <- case lookup "shift-heading-level-by" kvs of
       Nothing -> pure 0
@@ -357,14 +364,19 @@ includeDiv env ctx attr@(ident, classes, kvs) placeholder path = do
     let fmt = readerFormat env (lookup "format" kvs) path
     blocks <- lift (readDocument (envReader env) fmt text)
     maybe (throwError ("pandoc cannot read it as \"" <> fmt <> "\"")) (pure . (,,) file shift) blocks
+  -- the div's own blocks are this file's: their includes are done after
+  -- the div's, whether it succeeds or fails
   case r of
-    Left reason -> Div attr placeholder <$ warn ctx path reason
+    Left reason -> do
+      warn ctx path reason
+      Div attr <$> expand env ctx own
     Right (file, shift, blocks) -> do
       let inner = Ctx (T.pack (opened file)) (takeDirectory (opened file)) (Just (realDir file))
                       (ctxDepth ctx + 1) (Set.insert (real file) (ctxChain ctx))
       blocks' <- expand env inner blocks
+      own' <- expand env ctx own
       pure $ Div (ident, classes, [kv | kv@(k, _) <- kvs, k `notElem` ["include", "format", "shift-heading-level-by"]])
-                 (rebase (directoryOf path) (shiftHeadings shift blocks'))
+                 (own' ++ rebase (directoryOf path) (shiftHeadings shift blocks'))
 
 -- | The format to read a div's file with: the div's own; else the one the
 -- file's extension names, if not markdown; else the main document's.
