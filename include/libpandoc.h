@@ -137,12 +137,14 @@ extern "C" {
  * took it for trusted); "citeproc-files"; 1.15: the include step, "panclude"
  * among the filters ({"type": "panclude", "roots": [...]}; -F panclude on a
  * command line), and "untrusted": {"panclude-roots": [...]}; untrusted
- * options may have "filters" naming "panclude" and "citeproc").
- * The pandoc inside has
+ * options may have "filters" naming "panclude" and "citeproc"; 1.16: a
+ * change of meaning: the include step appends the file's content to the
+ * element's own (a code block's text, a div's blocks) instead of
+ * replacing it). The pandoc inside has
  * its own version, and so does its document AST: pandoc_query "version"
  * and "api-version". */
 #define LIBPANDOC_ABI_VERSION_MAJOR 1
-#define LIBPANDOC_ABI_VERSION_MINOR 15
+#define LIBPANDOC_ABI_VERSION_MINOR 16
 #define LIBPANDOC_ABI_VERSION (LIBPANDOC_ABI_VERSION_MAJOR * 1000 + LIBPANDOC_ABI_VERSION_MINOR)
 
 /* Its layout is part of the ABI: hosts of libpandoc.wasm read it from the
@@ -389,7 +391,9 @@ LIBPANDOC_API int pandoc_abi_version(void);
  * "filters" (and -F panclude on a command line: pandoc_convert_args,
  * pandoc_main) is panclude (https://github.com/ickc/panclude, whose SPEC.md
  * is its contract), the include attribute of code blocks and divs, run
- * there, as its Lua filter panclude.lua runs under stock pandoc. It belongs
+ * there, as its Lua filter panclude.lua runs under stock pandoc: the file's
+ * content goes after the element's own, which isn't looked at (from 1.16;
+ * in 1.15 it replaced it). It belongs
  * first, so that the filters after it see the files' content; it runs where
  * it is put, not moved, and filters before it see the elements as the
  * reader made them. The name is reserved: a program named panclude is not

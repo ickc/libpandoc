@@ -70,7 +70,7 @@ libpandoc makes such a call again, up to three times (1.10), unless it was
 given no input; a callback filter may then run twice.
 
 Versions: `LIBPANDOC_ABI_VERSION_MAJOR`/`_MINOR` (and `pandoc_abi_version()`)
-are this C interface's own, 1.15 now; the embedded pandoc's version and its
+are this C interface's own, 1.16 now; the embedded pandoc's version and its
 AST's are `pandoc_query` "version" and "api-version". Packages of libpandoc
 are versioned as the pandoc they embed. The rule: a binding built for
 MAJOR.MINOR works with a library of the same MAJOR and a MINOR at least as
@@ -207,8 +207,11 @@ after it sees the files' content as if the document held it.
 :::
 ````
 
-A code block takes the file's text; with `raw="latex"` it becomes raw
-content; a div is filled with the file read as a document. Its
+The file's content goes after the element's own (1.16; 1.15 replaced it):
+a code block keeps its text (say, a YAML header of options for the filter
+owning its class) and gets the file's text after it; with `raw="latex"`
+it becomes raw content; a div keeps its blocks and gets the file's, read
+as a document, after them. What the element holds isn't looked at. Its
 specification (`SPEC.md` there) is the contract, and its cases run in this
 repository's CI against the step built in (`test/panclude.mjs`, natively
 and in libpandoc.wasm). Under stock pandoc, its Lua filter `panclude.lua`
@@ -363,7 +366,7 @@ those and GHC's libffi into `lib/libpandoc/` (12 files, 32 MB, beside
 176 MB of `libpandoc.so`, stripped) with relative RPATHs. On macOS all of
 them are linked in, leaving GHC's libffi; the Windows DLL is standalone. A
 release's tarball is 36 to 40 MB. `lib/pkgconfig/libpandoc.pc`'s version
-is the ABI's (`pkg-config --atleast-version=1.15 libpandoc`).
+is the ABI's (`pkg-config --atleast-version=1.16 libpandoc`).
 
 CI builds and tests linux-64, linux-aarch64, osx-64, osx-arm64 and win-64,
 and linux-64-musl and linux-aarch64-musl (Alpine and the like: built in the
